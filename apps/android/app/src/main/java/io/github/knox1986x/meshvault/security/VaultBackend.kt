@@ -310,8 +310,8 @@ class InMemoryVaultBackend : VaultBackend {
         if (existingMediaId != null) {
             when (policy) {
                 DedupPolicy.SKIP_DUPLICATE -> return null
-                DedupPolicy.LINK_EXISTING -> return existingMediaId
-                DedupPolicy.IMPORT_SEPARATE -> Unit
+                DedupPolicy.LINK_INTO_TARGET_FOLDER -> return existingMediaId
+                DedupPolicy.KEEP_INDEPENDENT_COPY -> Unit
             }
         }
 
