@@ -66,7 +66,11 @@ impl LanPairingSession {
         })
     }
 
-    pub fn to_qr_payload(&self, peer_id: Uuid, host_port: impl Into<String>) -> LanPairingQrPayload {
+    pub fn to_qr_payload(
+        &self,
+        peer_id: Uuid,
+        host_port: impl Into<String>,
+    ) -> LanPairingQrPayload {
         LanPairingQrPayload {
             vault_id: self.vault_id,
             peer_id,

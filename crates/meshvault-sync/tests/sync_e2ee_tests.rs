@@ -13,7 +13,9 @@ use meshvault_sync::{
 use tempfile::TempDir;
 use uuid::Uuid;
 
-fn create_test_vault(dir: &std::path::Path) -> (VaultLayout, meshvault_crypto::MasterVaultKey, VaultCatalog) {
+fn create_test_vault(
+    dir: &std::path::Path,
+) -> (VaultLayout, meshvault_crypto::MasterVaultKey, VaultCatalog) {
     let layout = VaultLayout::new(dir);
     let pass = SecretString::from("sync-master-pass".to_string());
     let (header, mvk) = VaultHeader::create_with_passphrase(

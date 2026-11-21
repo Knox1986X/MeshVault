@@ -156,6 +156,7 @@ impl SyncEngine {
     }
 
     /// Runs bidirectional zero-knowledge sync against any `RemoteSyncTransport`.
+    #[allow(clippy::too_many_arguments)]
     pub fn sync_vault(
         &mut self,
         layout: &VaultLayout,
@@ -233,8 +234,7 @@ impl SyncEngine {
                             let payload = transport
                                 .get_object(&Self::remote_blob_path(vault_id, desc.media_id))?;
                             bytes_transferred += payload.len() as u64;
-                            let raw_mvb =
-                                decode_cloud_envelope(mvk, desc.media_id, &payload)?;
+                            let raw_mvb = decode_cloud_envelope(mvk, desc.media_id, &payload)?;
                             meshvault_storage::atomic_write_file(&local_blob, &raw_mvb)?;
                             downloaded_blobs += 1;
                         }
@@ -271,9 +271,7 @@ impl SyncEngine {
             .map(|m| m.blobs.iter().map(|b| b.media_id).collect())
             .unwrap_or_default();
 
-        let mut descriptors = remote_manifest
-            .map(|m| m.blobs)
-            .unwrap_or_default();
+        let mut descriptors = remote_manifest.map(|m| m.blobs).unwrap_or_default();
 
         for media_id in local_catalog.media.keys() {
             let local_blob = layout.blob_path(*media_id);
@@ -368,11 +366,7 @@ impl SyncEngine {
 }
 
 /// Non-destructive Last-Writer-Wins catalog merge preserving folders and media from both peers.
-pub fn merge_catalogs_lww(
-    local: &mut VaultCatalog,
-    remote: &VaultCatalog,
-    remote_device_id: Uuid,
-) {
+pub fn merge_catalogs_lww(local: &mut VaultCatalog, remote: &VaultCatalog, remote_device_id: Uuid) {
     let suffix = format!("conflict-{}", &remote_device_id.simple().to_string()[..6]);
 
     for (folder_id, remote_folder) in &remote.folders {
@@ -386,9 +380,10 @@ pub fn merge_catalogs_lww(
             local_folder.blur_shield |= remote_folder.blur_shield;
         } else {
             let mut copy = remote_folder.clone();
-            let same_name_sibling = local.folders.values().any(|f| {
-                f.parent_id == copy.parent_id && f.name.eq_ignore_ascii_case(&copy.name)
-            });
+            let same_name_sibling = local
+                .folders
+                .values()
+                .any(|f| f.parent_id == copy.parent_id && f.name.eq_ignore_ascii_case(&copy.name));
             if same_name_sibling {
                 copy.name = format!("{} ({suffix})", copy.name);
             }
