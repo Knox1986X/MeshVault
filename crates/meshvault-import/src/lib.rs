@@ -1,5 +1,24 @@
+pub mod error;
+pub mod exif;
+pub mod pipeline;
+pub mod scanner;
+pub mod wal;
+
+pub use error::ImportError;
+pub use exif::{
+    classify_by_extension, compute_dhash_64, extract_metadata_and_thumbnails,
+    parse_exif_datetime_unix_ms, parse_jpeg_exif, ExtractedMediaMeta, ParsedExif,
+};
+pub use pipeline::{
+    generate_synthetic_tree, ImportOptions, ImportPipeline, ImportReport, QuarantinedItem,
+};
+pub use scanner::{
+    scan_directory_tree, ImportTreePreview, KindCounts, ScanOptions, ScannedFolderSummary,
+    ScannedItem,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+pub use wal::{ImportWal, WalItem};
 
 /// States of the transactional recursive import state machine.
 /// Source originals are never eligible for deletion prior to `CatalogCommitted`.

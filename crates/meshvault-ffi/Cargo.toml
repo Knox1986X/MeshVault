@@ -5,10 +5,20 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "UniFFI boundary types and vault session security state machine for Android Kotlin and CachyOS"
+description = "UniFFI bridge and vault session security state machine for Android Kotlin and CachyOS"
+
+[lib]
+crate-type = ["lib", "cdylib"]
 
 [dependencies]
 meshvault-crypto = { path = "../meshvault-crypto" }
 meshvault-import = { path = "../meshvault-import" }
 meshvault-storage = { path = "../meshvault-storage" }
 serde.workspace = true
+thiserror.workspace = true
+uniffi.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,11 +1,14 @@
 use std::collections::BTreeMap;
-use std::fs;
-use std::io::Write;
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
-use meshvault_crypto::{CryptoError, MasterVaultKey, VaultHeader, WRAPPED_FEK_LEN, XNONCE_LEN};
+use meshvault_crypto::{
+    unwrap_fek, wrap_fek, ChunkedBlobReader, CryptoError, FileEncryptionKey, MasterVaultKey,
+    VaultHeader, TAG_LEN, WRAPPED_FEK_LEN, XNONCE_LEN,
+};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -17,6 +20,12 @@ pub const THUMB_PACK_TARGET_BYTES: usize = 4 * 1024 * 1024;
 
 /// Magic bytes for an encrypted catalog file (`catalog/tree.mvc`).
 pub const CATALOG_MAGIC: [u8; 4] = *b"MVC1";
+
+/// Magic bytes for a 4 MiB encrypted thumbnail pack (`thumbs/pack_<id>.mvt`).
+pub const THUMB_PACK_MAGIC: [u8; 4] = *b"MVT1";
+
+/// Fixed 20-byte prelude at offset 0 of every `.mvt` thumbnail pack.
+pub const THUMB_PACK_PRELUDE_LEN: usize = 20;
 
 const CATALOG_AAD_PREFIX: &[u8] = b"MVLT-CATALOG-V1";
 
@@ -33,6 +42,9 @@ pub enum StorageError {
 
     #[error("invalid catalog format: {0}")]
     InvalidCatalog(String),
+
+    #[error("invalid thumbnail pack: {0}")]
+    InvalidThumbPack(String),
 
     #[error("folder not found: {0}")]
     FolderNotFound(Uuid),
@@ -73,6 +85,14 @@ impl VaultLayout {
         let hex = file_id.simple().to_string();
         let prefix = &hex[..2];
         self.blobs_dir().join(prefix).join(format!("{hex}.mvb"))
+    }
+
+    pub fn blob_part_path(&self, file_id: Uuid) -> PathBuf {
+        let hex = file_id.simple().to_string();
+        let prefix = &hex[..2];
+        self.blobs_dir()
+            .join(prefix)
+            .join(format!("{hex}.mvb.part"))
     }
 
     pub fn thumbs_dir(&self) -> PathBuf {
@@ -118,6 +138,235 @@ impl VaultLayout {
         let header = VaultHeader::select_latest_valid(primary.as_deref(), backup.as_deref())?;
         Ok(header)
     }
+
+    /// Seals and atomically writes `catalog/tree.mvc`.
+    pub fn save_catalog(
+        &self,
+        mvk: &MasterVaultKey,
+        catalog: &VaultCatalog,
+    ) -> Result<(), StorageError> {
+        self.ensure_directories()?;
+        let sealed = catalog.seal(mvk)?;
+        atomic_write_file(&self.catalog_path(), &sealed)?;
+        Ok(())
+    }
+
+    /// Reads and authenticates `catalog/tree.mvc` into RAM.
+    pub fn load_catalog(&self, mvk: &MasterVaultKey) -> Result<VaultCatalog, StorageError> {
+        let sealed = fs::read(self.catalog_path())?;
+        VaultCatalog::open(mvk, &sealed)
+    }
+
+    /// Appends an encrypted thumbnail into a 4 MiB `.mvt` pack and returns its `ThumbLocator`.
+    pub fn append_thumbnail(
+        &self,
+        mvk: &MasterVaultKey,
+        catalog: &mut VaultCatalog,
+        media_id: Uuid,
+        thumb_bytes: &[u8],
+    ) -> Result<ThumbLocator, StorageError> {
+        self.ensure_directories()?;
+
+        let active_pack_id = catalog
+            .thumb_packs
+            .iter()
+            .find(|(_, meta)| (meta.payload_bytes as usize) < THUMB_PACK_TARGET_BYTES)
+            .map(|(id, _)| *id);
+
+        let (pack_id, pack_fek) = match active_pack_id {
+            Some(id) => {
+                let meta = catalog
+                    .thumb_packs
+                    .get(&id)
+                    .ok_or_else(|| StorageError::InvalidThumbPack("missing pack meta".into()))?;
+                let wrapped: [u8; WRAPPED_FEK_LEN] = meta
+                    .wrapped_fek
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| StorageError::InvalidThumbPack("invalid wrapped FEK".into()))?;
+                let fek = unwrap_fek(mvk, id, &wrapped)?;
+                (id, fek)
+            }
+            None => {
+                let id = Uuid::new_v4();
+                let fek = FileEncryptionKey::generate();
+                let wrapped = wrap_fek(mvk, id, &fek)?;
+                let pack_path = self.thumb_pack_path(id);
+                let mut prelude = [0u8; THUMB_PACK_PRELUDE_LEN];
+                prelude[0..4].copy_from_slice(&THUMB_PACK_MAGIC);
+                prelude[4..20].copy_from_slice(id.as_bytes());
+                atomic_write_file(&pack_path, &prelude)?;
+
+                catalog.thumb_packs.insert(
+                    id,
+                    ThumbPackMeta {
+                        pack_id: id,
+                        wrapped_fek: wrapped.to_vec(),
+                        payload_bytes: THUMB_PACK_PRELUDE_LEN as u32,
+                    },
+                );
+                (id, fek)
+            }
+        };
+
+        let pack_path = self.thumb_pack_path(pack_id);
+        let mut file = OpenOptions::new().read(true).write(true).open(&pack_path)?;
+        let file_len = file.seek(SeekFrom::End(0))?;
+        let offset = u32::try_from(file_len)
+            .map_err(|_| StorageError::InvalidThumbPack("pack offset overflow".into()))?;
+
+        let mut nonce_bytes = [0u8; XNONCE_LEN];
+        OsRng.fill_bytes(&mut nonce_bytes);
+        let nonce = XNonce::from_slice(&nonce_bytes);
+        let aad = thumb_record_aad(pack_id, offset, media_id);
+
+        let cipher = XChaCha20Poly1305::new_from_slice(pack_fek.expose())
+            .map_err(|_| StorageError::InvalidThumbPack("invalid pack FEK".into()))?;
+        let ciphertext = cipher
+            .encrypt(
+                nonce,
+                Payload {
+                    msg: thumb_bytes,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| CryptoError::AuthenticationFailed)?;
+
+        let total_record_len = u32::try_from(XNONCE_LEN + ciphertext.len())
+            .map_err(|_| StorageError::InvalidThumbPack("thumbnail too large".into()))?;
+
+        file.write_all(&nonce_bytes)?;
+        file.write_all(&ciphertext)?;
+        file.sync_all()?;
+
+        if let Some(meta) = catalog.thumb_packs.get_mut(&pack_id) {
+            meta.payload_bytes = offset.saturating_add(total_record_len);
+        }
+
+        Ok(ThumbLocator {
+            pack_id,
+            offset,
+            len: total_record_len,
+        })
+    }
+
+    /// Decrypts a thumbnail directly from its 4 MiB `.mvt` pack into RAM (zero disk plaintext).
+    pub fn read_thumbnail(
+        &self,
+        mvk: &MasterVaultKey,
+        catalog: &VaultCatalog,
+        media_id: Uuid,
+        locator: ThumbLocator,
+    ) -> Result<Zeroizing<Vec<u8>>, StorageError> {
+        let meta = catalog
+            .thumb_packs
+            .get(&locator.pack_id)
+            .ok_or_else(|| StorageError::InvalidThumbPack("unknown thumb pack id".into()))?;
+        let wrapped: [u8; WRAPPED_FEK_LEN] = meta
+            .wrapped_fek
+            .as_slice()
+            .try_into()
+            .map_err(|_| StorageError::InvalidThumbPack("invalid wrapped FEK".into()))?;
+        let pack_fek = unwrap_fek(mvk, locator.pack_id, &wrapped)?;
+
+        if (locator.len as usize) < XNONCE_LEN + TAG_LEN {
+            return Err(StorageError::InvalidThumbPack(
+                "thumbnail locator shorter than AEAD overhead".into(),
+            ));
+        }
+
+        let pack_path = self.thumb_pack_path(locator.pack_id);
+        let mut file = fs::File::open(pack_path)?;
+        let mut prelude = [0u8; THUMB_PACK_PRELUDE_LEN];
+        file.read_exact(&mut prelude)?;
+        if prelude[0..4] != THUMB_PACK_MAGIC || prelude[4..20] != *locator.pack_id.as_bytes() {
+            return Err(StorageError::InvalidThumbPack(
+                "pack prelude mismatch".into(),
+            ));
+        }
+
+        file.seek(SeekFrom::Start(u64::from(locator.offset)))?;
+        let mut record = vec![0u8; locator.len as usize];
+        file.read_exact(&mut record)?;
+
+        let nonce = XNonce::from_slice(&record[..XNONCE_LEN]);
+        let ciphertext = &record[XNONCE_LEN..];
+        let aad = thumb_record_aad(locator.pack_id, locator.offset, media_id);
+
+        let cipher = XChaCha20Poly1305::new_from_slice(pack_fek.expose())
+            .map_err(|_| StorageError::InvalidThumbPack("invalid pack FEK".into()))?;
+        let plain = cipher
+            .decrypt(
+                nonce,
+                Payload {
+                    msg: ciphertext,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| CryptoError::AuthenticationFailed)?;
+
+        Ok(Zeroizing::new(plain))
+    }
+
+    /// Runs Vault Scrub across all active media blobs, verifying every chunk Poly1305 tag.
+    pub fn scrub_vault(
+        &self,
+        mvk: &MasterVaultKey,
+        catalog: &VaultCatalog,
+    ) -> Result<ScrubReport, StorageError> {
+        let mut report = ScrubReport::default();
+
+        for (media_id, entry) in &catalog.media {
+            let blob_path = self.blob_path(*media_id);
+            if !blob_path.exists() {
+                report.missing_blobs.push(*media_id);
+                continue;
+            }
+
+            let wrapped: [u8; WRAPPED_FEK_LEN] = match entry.wrapped_fek.as_slice().try_into() {
+                Ok(arr) => arr,
+                Err(_) => {
+                    report.corrupted_blobs.push(*media_id);
+                    continue;
+                }
+            };
+            let fek = match unwrap_fek(mvk, *media_id, &wrapped) {
+                Ok(k) => k,
+                Err(_) => {
+                    report.corrupted_blobs.push(*media_id);
+                    continue;
+                }
+            };
+
+            let file = match fs::File::open(&blob_path) {
+                Ok(f) => f,
+                Err(_) => {
+                    report.corrupted_blobs.push(*media_id);
+                    continue;
+                }
+            };
+
+            match ChunkedBlobReader::open(file) {
+                Ok(mut reader) => match reader.verify_all_chunks(&fek) {
+                    Ok(plain_bytes) => {
+                        report.checked_blobs += 1;
+                        report.checked_chunks += reader.total_chunks();
+                        report.verified_bytes += plain_bytes;
+                    }
+                    Err(_) => {
+                        report.checked_blobs += 1;
+                        report.corrupted_blobs.push(*media_id);
+                    }
+                },
+                Err(_) => {
+                    report.checked_blobs += 1;
+                    report.corrupted_blobs.push(*media_id);
+                }
+            }
+        }
+
+        Ok(report)
+    }
 }
 
 /// Supported media categories inside the encrypted catalog.
@@ -130,6 +379,14 @@ pub enum MediaKind {
     Animation,
     AudioNote,
     MarkdownNote,
+}
+
+/// Metadata for a 4 MiB encrypted thumbnail pack (`thumbs/pack_*.mvt`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThumbPackMeta {
+    pub pack_id: Uuid,
+    pub wrapped_fek: Vec<u8>,
+    pub payload_bytes: u32,
 }
 
 /// Encrypted folder node inside the hierarchical vault tree.
@@ -159,12 +416,22 @@ pub struct ThumbLocator {
 pub struct MediaEntry {
     pub id: Uuid,
     pub folder_id: Uuid,
+    #[serde(default)]
+    pub linked_folder_ids: Vec<Uuid>,
     pub original_name: String,
     pub mime_type: String,
     pub kind: MediaKind,
     pub plaintext_size: u64,
     pub dedup_blake3: [u8; 32],
     pub phash: Option<u64>,
+    #[serde(default)]
+    pub width: Option<u32>,
+    #[serde(default)]
+    pub height: Option<u32>,
+    #[serde(default)]
+    pub exif_camera: Option<String>,
+    #[serde(default)]
+    pub micro_thumb: Option<Vec<u8>>,
     pub wrapped_fek: Vec<u8>,
     pub thumb: Option<ThumbLocator>,
     pub tags: Vec<String>,
@@ -178,6 +445,12 @@ impl MediaEntry {
     pub fn has_valid_wrapped_fek_len(&self) -> bool {
         self.wrapped_fek.len() == WRAPPED_FEK_LEN
     }
+
+    pub fn is_in_folder(&self, target_folder_id: Uuid) -> bool {
+        self.trashed_at_unix_ms.is_none()
+            && (self.folder_id == target_folder_id
+                || self.linked_folder_ids.contains(&target_folder_id))
+    }
 }
 
 /// Hierarchical folder tree and media catalog encrypted as `catalog/tree.mvc`.
@@ -188,6 +461,10 @@ pub struct VaultCatalog {
     pub catalog_revision: u64,
     pub folders: BTreeMap<Uuid, FolderNode>,
     pub media: BTreeMap<Uuid, MediaEntry>,
+    #[serde(default)]
+    pub thumb_packs: BTreeMap<Uuid, ThumbPackMeta>,
+    #[serde(default)]
+    pub dedup_index: BTreeMap<String, Uuid>,
 }
 
 impl VaultCatalog {
@@ -216,7 +493,17 @@ impl VaultCatalog {
             catalog_revision: 1,
             folders,
             media: BTreeMap::new(),
+            thumb_packs: BTreeMap::new(),
+            dedup_index: BTreeMap::new(),
         }
+    }
+
+    /// Finds an existing direct child folder by exact name under `parent_id`.
+    pub fn find_child_folder(&self, parent_id: Uuid, name: &str) -> Option<Uuid> {
+        self.folders
+            .values()
+            .find(|f| f.parent_id == Some(parent_id) && f.name == name)
+            .map(|f| f.id)
     }
 
     /// Creates a subfolder under `parent_id`, preserving arbitrary nesting depth.
@@ -246,6 +533,63 @@ impl VaultCatalog {
         );
         self.catalog_revision = self.catalog_revision.saturating_add(1);
         Ok(id)
+    }
+
+    /// Idempotently walks or creates nested subfolders (`Incremental Folder Merge`).
+    pub fn ensure_folder_path(
+        &mut self,
+        start_parent_id: Uuid,
+        segments: &[&str],
+        created_at_unix_ms: u64,
+    ) -> Result<Uuid, StorageError> {
+        if !self.folders.contains_key(&start_parent_id) {
+            return Err(StorageError::FolderNotFound(start_parent_id));
+        }
+        let mut current = start_parent_id;
+        for seg in segments {
+            if seg.is_empty() {
+                continue;
+            }
+            if let Some(existing) = self.find_child_folder(current, seg) {
+                current = existing;
+            } else {
+                current = self.create_folder(current, (*seg).to_string(), created_at_unix_ms)?;
+            }
+        }
+        Ok(current)
+    }
+
+    /// Inserts a media entry and updates the keyed BLAKE3 deduplication index.
+    pub fn insert_media(&mut self, entry: MediaEntry) {
+        let dedup_key = hex_32(&entry.dedup_blake3);
+        let id = entry.id;
+        self.dedup_index.entry(dedup_key).or_insert(id);
+        self.media.insert(id, entry);
+        self.catalog_revision = self.catalog_revision.saturating_add(1);
+    }
+
+    /// Looks up an existing media entry matching a vault-scoped keyed BLAKE3 hash.
+    pub fn find_by_dedup_hash(&self, dedup_hash: &[u8; 32]) -> Option<Uuid> {
+        self.dedup_index.get(&hex_32(dedup_hash)).copied()
+    }
+
+    /// Lists direct subfolders and active media items inside `folder_id`.
+    pub fn list_folder_contents(&self, folder_id: Uuid) -> (Vec<&FolderNode>, Vec<&MediaEntry>) {
+        let mut subfolders: Vec<&FolderNode> = self
+            .folders
+            .values()
+            .filter(|f| f.parent_id == Some(folder_id))
+            .collect();
+        subfolders.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let mut items: Vec<&MediaEntry> = self
+            .media
+            .values()
+            .filter(|m| m.is_in_folder(folder_id))
+            .collect();
+        items.sort_by(|a, b| a.original_name.cmp(&b.original_name));
+
+        (subfolders, items)
     }
 
     /// Serializes and encrypts the entire catalog with the MVK-derived catalog key.
@@ -343,7 +687,29 @@ fn catalog_aad(vault_id: Uuid, revision: u64) -> Vec<u8> {
     aad
 }
 
-fn atomic_write_file(target: &Path, data: &[u8]) -> Result<(), std::io::Error> {
+fn thumb_record_aad(pack_id: Uuid, offset: u32, media_id: Uuid) -> [u8; 40] {
+    let mut aad = [0u8; 40];
+    aad[0..4].copy_from_slice(&THUMB_PACK_MAGIC);
+    aad[4..20].copy_from_slice(pack_id.as_bytes());
+    aad[20..24].copy_from_slice(&offset.to_le_bytes());
+    aad[24..40].copy_from_slice(media_id.as_bytes());
+    aad
+}
+
+fn hex_32(bytes: &[u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(64);
+    for b in bytes {
+        out.push(char::from(HEX[(b >> 4) as usize]));
+        out.push(char::from(HEX[(b & 0x0f) as usize]));
+    }
+    out
+}
+
+pub fn atomic_write_file(target: &Path, data: &[u8]) -> Result<(), std::io::Error> {
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let tmp_name = format!(
         ".{}.tmp.{}",
         target
@@ -396,5 +762,31 @@ mod tests {
             reopened.folders.get(&nested_id).unwrap().parent_id,
             Some(folder_id)
         );
+    }
+
+    #[test]
+    fn thumb_pack_encrypts_and_reads_back_in_ram() {
+        let dir = std::env::temp_dir().join(format!("mv_thumb_test_{}", Uuid::new_v4()));
+        let layout = VaultLayout::new(&dir);
+        let mvk = MasterVaultKey::generate();
+        let mut catalog = VaultCatalog::new(Uuid::new_v4(), 1_700_000_000_000);
+        let media_id = Uuid::new_v4();
+        let secret_thumb = b"SECRET_THUMBNAIL_PAYLOAD_WEBP_BYTES";
+
+        let locator = layout
+            .append_thumbnail(&mvk, &mut catalog, media_id, secret_thumb)
+            .expect("append thumb");
+
+        let pack_disk_bytes = fs::read(layout.thumb_pack_path(locator.pack_id)).expect("read pack");
+        assert!(!pack_disk_bytes
+            .windows(secret_thumb.len())
+            .any(|w| w == secret_thumb));
+
+        let plain = layout
+            .read_thumbnail(&mvk, &catalog, media_id, locator)
+            .expect("read thumb");
+        assert_eq!(&*plain, secret_thumb);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

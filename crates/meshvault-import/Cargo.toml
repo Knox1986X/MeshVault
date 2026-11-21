@@ -5,10 +5,19 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Transactional recursive folder import pipeline, keyed BLAKE3 deduplication, and WAL resume for MeshVault"
+description = "Transactional recursive folder import pipeline, EXIF parser, thumbnails, keyed BLAKE3 deduplication, and WAL resume for MeshVault"
 
 [dependencies]
+chacha20poly1305.workspace = true
+image.workspace = true
 meshvault-crypto = { path = "../meshvault-crypto" }
 meshvault-storage = { path = "../meshvault-storage" }
+rand_core.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
 uuid.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
