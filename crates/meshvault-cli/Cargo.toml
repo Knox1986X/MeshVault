@@ -17,3 +17,7 @@ meshvault-import = { path = "../meshvault-import" }
 meshvault-storage = { path = "../meshvault-storage" }
 meshvault-sync = { path = "../meshvault-sync" }
 serde_json.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

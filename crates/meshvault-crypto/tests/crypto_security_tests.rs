@@ -422,3 +422,15 @@ fn decoy_slot_isolates_decoy_mvk_from_real_mvk() {
         CryptoError::SlotNotFound
     );
 }
+
+#[test]
+fn linux_mem_guard_locks_secret_and_disables_core_dumps() {
+    let disabled = meshvault_crypto::disable_core_dumps();
+    #[cfg(target_os = "linux")]
+    assert!(disabled);
+
+    let boxed = meshvault_crypto::LockedSecretBox::new([0x42u8; 32]);
+    assert_eq!(boxed.expose(), &[0x42u8; 32]);
+    #[cfg(target_os = "linux")]
+    assert!(boxed.is_mlocked());
+}

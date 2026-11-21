@@ -1,0 +1,35 @@
+# Maintainer: Knox1986X <https://github.com/Knox1986X/MeshVault>
+pkgname=meshvault
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Zero-knowledge encrypted photo & media vault (CLI + CachyOS Tauri v2 desktop)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Knox1986X/MeshVault"
+license=('Apache-2.0')
+depends=('gtk3' 'webkit2gtk-4.1' 'libsecret' 'openssl')
+makedepends=('rust' 'cargo' 'nodejs' 'npm')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/Knox1986X/MeshVault/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$srcdir/MeshVault-$pkgver"
+  export CARGO_TARGET_DIR="$srcdir/target"
+  cargo build --release --locked --bin meshvault
+  cargo build --release --manifest-path apps/desktop/src-tauri/Cargo.toml --features tauri-app
+}
+
+check() {
+  cd "$srcdir/MeshVault-$pkgver"
+  export CARGO_TARGET_DIR="$srcdir/target"
+  cargo test --workspace --locked
+  cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+  node --test apps/desktop/tests/desktop_cockpit.test.mjs
+}
+
+package() {
+  cd "$srcdir/MeshVault-$pkgver"
+  install -Dm755 "$srcdir/target/release/meshvault" "$pkgdir/usr/bin/meshvault"
+  install -Dm755 "$srcdir/target/release/meshvault-desktop" "$pkgdir/usr/bin/meshvault-desktop"
+  install -Dm644 "packaging/meshvault.desktop" "$pkgdir/usr/share/applications/meshvault.desktop"
+  install -Dm644 "docs/FORMAT.md" "$pkgdir/usr/share/doc/$pkgname/FORMAT.md"
+}
