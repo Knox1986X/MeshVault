@@ -109,12 +109,14 @@ pub fn scan_directory_tree(
 
     let folders = folder_stats
         .into_iter()
-        .map(|(relative_path, (file_count, bytes))| ScannedFolderSummary {
-            relative_path,
-            file_count,
-            total_bytes: bytes,
-            selected: true,
-        })
+        .map(
+            |(relative_path, (file_count, bytes))| ScannedFolderSummary {
+                relative_path,
+                file_count,
+                total_bytes: bytes,
+                selected: true,
+            },
+        )
         .collect();
 
     Ok(ImportTreePreview {

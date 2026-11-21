@@ -190,8 +190,11 @@ fn parse_tiff_ifd(tiff: &[u8], out: &mut ParsedExif) {
     let mut exif_ifd_offset: Option<u32> = None;
     let mut fallback_datetime: Option<u64> = None;
 
-    scan_ifd(tiff, ifd0_offset as usize, big_endian, |tag, val| {
-        match tag {
+    scan_ifd(
+        tiff,
+        ifd0_offset as usize,
+        big_endian,
+        |tag, val| match tag {
             0x010F => make = read_ascii_tag(tiff, val),
             0x0110 => model = read_ascii_tag(tiff, val),
             0x0132 => {
@@ -201,8 +204,8 @@ fn parse_tiff_ifd(tiff: &[u8], out: &mut ParsedExif) {
             }
             0x8769 => exif_ifd_offset = val.as_u32(big_endian),
             _ => {}
-        }
-    });
+        },
+    );
 
     if let Some(offset) = exif_ifd_offset {
         scan_ifd(tiff, offset as usize, big_endian, |tag, val| {
@@ -220,7 +223,10 @@ fn parse_tiff_ifd(tiff: &[u8], out: &mut ParsedExif) {
 
     out.camera = match (make, model) {
         (Some(mk), Some(md)) => {
-            if md.to_ascii_lowercase().starts_with(&mk.to_ascii_lowercase()) {
+            if md
+                .to_ascii_lowercase()
+                .starts_with(&mk.to_ascii_lowercase())
+            {
                 Some(md)
             } else {
                 Some(format!("{mk} {md}"))

@@ -50,7 +50,9 @@ fn ffi_session_lifecycle_import_read_lock_and_recovery() {
     assert_eq!(year_contents.media.len(), 1);
 
     let media_id = year_contents.media[0].id.clone();
-    let decrypted_chunk = session.read_media_chunk(media_id.clone(), 0).expect("chunk 0");
+    let decrypted_chunk = session
+        .read_media_chunk(media_id.clone(), 0)
+        .expect("chunk 0");
     assert_eq!(decrypted_chunk, b"%PDF-1.7-SAMPLE-DATA");
 
     let scrub = session.scrub_vault().expect("scrub");
@@ -77,7 +79,9 @@ fn ffi_session_lifecycle_import_read_lock_and_recovery() {
         MeshVaultSession::unlock_with_passphrase(vault_path, "ffi-pass-2".to_string())
             .expect("unlock with rotated pass");
     assert_eq!(
-        unlocked_new.read_media_all_bytes(media_id).expect("read all"),
+        unlocked_new
+            .read_media_all_bytes(media_id)
+            .expect("read all"),
         b"%PDF-1.7-SAMPLE-DATA"
     );
 }
