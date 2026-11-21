@@ -1,7 +1,6 @@
 package io.github.knox1986x.meshvault.security
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -38,7 +37,7 @@ class VaultSessionStateTest {
 
         val metrics = backend.vaultMetrics()
         assertEquals(1L, metrics.totalMedia)
-        assertEquals(2L, metrics.folderCount)
+        assertEquals(3L, metrics.folderCount)
 
         val item = backend.listAllMediaTimeline().first()
         backend.enterSafePresentation(setOf(item.id))
@@ -47,6 +46,7 @@ class VaultSessionStateTest {
 
         backend.lock()
         assertEquals(VaultSecurityState.LOCKED, backend.securityState)
-        assertFalse(backend.readMediaAllBytes(item.id).isNotEmpty())
+        assertEquals(0, backend.activeCacheCount())
+        assertTrue(runCatching { backend.readMediaAllBytes(item.id) }.isFailure)
     }
 }

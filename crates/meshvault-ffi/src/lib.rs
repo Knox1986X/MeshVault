@@ -409,11 +409,7 @@ impl MeshVaultSession {
     }
 
     /// Toggles pinned status on a folder for quick access on the Dark Cockpit Overview.
-    pub fn set_folder_pinned(
-        &self,
-        folder_id: String,
-        pinned: bool,
-    ) -> Result<(), FfiVaultError> {
+    pub fn set_folder_pinned(&self, folder_id: String, pinned: bool) -> Result<(), FfiVaultError> {
         let target_uuid = parse_uuid(&folder_id)?;
         let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
         let inner = &mut *guard;
@@ -423,7 +419,7 @@ impl MeshVaultSession {
         let folder = catalog
             .folders
             .get_mut(&target_uuid)
-            .ok_or_else(|| FfiVaultError::FolderNotFound(folder_id))?;
+            .ok_or(FfiVaultError::FolderNotFound(folder_id))?;
         folder.pinned = pinned;
         catalog.catalog_revision = catalog.catalog_revision.saturating_add(1);
         inner.layout.save_catalog(mvk, catalog)?;
@@ -445,7 +441,7 @@ impl MeshVaultSession {
         let folder = catalog
             .folders
             .get_mut(&target_uuid)
-            .ok_or_else(|| FfiVaultError::FolderNotFound(folder_id))?;
+            .ok_or(FfiVaultError::FolderNotFound(folder_id))?;
         folder.blur_shield = blur_shield;
         catalog.catalog_revision = catalog.catalog_revision.saturating_add(1);
         inner.layout.save_catalog(mvk, catalog)?;
@@ -463,7 +459,7 @@ impl MeshVaultSession {
         let item = catalog
             .media
             .get_mut(&target_uuid)
-            .ok_or_else(|| FfiVaultError::MediaNotFound(media_id))?;
+            .ok_or(FfiVaultError::MediaNotFound(media_id))?;
         item.favorite = !item.favorite;
         let new_state = item.favorite;
         catalog.catalog_revision = catalog.catalog_revision.saturating_add(1);
@@ -711,10 +707,7 @@ impl MeshVaultSession {
     }
 }
 
-fn folder_to_dto(
-    catalog: &VaultCatalog,
-    f: &meshvault_storage::FolderNode,
-) -> FfiFolderDto {
+fn folder_to_dto(catalog: &VaultCatalog, f: &meshvault_storage::FolderNode) -> FfiFolderDto {
     let (subfolders, items) = catalog.list_folder_contents(f.id);
     let total_bytes: u64 = items.iter().map(|m| m.plaintext_size).sum();
     FfiFolderDto {

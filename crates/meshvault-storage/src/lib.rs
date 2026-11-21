@@ -621,7 +621,8 @@ impl VaultCatalog {
         items.sort_by(|a, b| {
             let ta = a.captured_at_unix_ms.unwrap_or(a.imported_at_unix_ms);
             let tb = b.captured_at_unix_ms.unwrap_or(b.imported_at_unix_ms);
-            tb.cmp(&ta).then_with(|| a.original_name.cmp(&b.original_name))
+            tb.cmp(&ta)
+                .then_with(|| a.original_name.cmp(&b.original_name))
         });
         items
     }

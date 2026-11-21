@@ -1,5 +1,6 @@
 package io.github.knox1986x.meshvault.security
 
+import java.security.MessageDigest
 import java.util.UUID
 
 enum class VaultSecurityState {
@@ -114,7 +115,7 @@ interface VaultBackend {
         fileName: String,
         bytes: ByteArray,
         policy: DedupPolicy,
-    ): String
+    ): String?
     fun readMediaChunk(mediaId: String, chunkIndex: Long): ByteArray
     fun readMediaAllBytes(mediaId: String): ByteArray
     fun readThumbnailBytes(mediaId: String): ByteArray
@@ -140,6 +141,7 @@ class InMemoryVaultBackend : VaultBackend {
     private val folders = linkedMapOf<String, VaultFolderItem>()
     private val media = linkedMapOf<String, VaultMediaItem>()
     private val mediaBytes = linkedMapOf<String, ByteArray>()
+    private val dedupHashes = linkedMapOf<String, String>()
     private val decodedRamCache = linkedMapOf<String, ByteArray>()
     private var presentationIds: Set<String> = emptySet()
 
@@ -299,8 +301,20 @@ class InMemoryVaultBackend : VaultBackend {
         fileName: String,
         bytes: ByteArray,
         policy: DedupPolicy,
-    ): String {
+    ): String? {
         requireUnlocked()
+        val digestHex = MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+        val existingMediaId = dedupHashes[digestHex]
+        if (existingMediaId != null) {
+            when (policy) {
+                DedupPolicy.SKIP_DUPLICATE -> return null
+                DedupPolicy.LINK_EXISTING -> return existingMediaId
+                DedupPolicy.IMPORT_SEPARATE -> Unit
+            }
+        }
+
         var currentFolder = targetParentId
         for (segment in relativeSegments) {
             if (segment.isBlank()) continue
@@ -330,6 +344,7 @@ class InMemoryVaultBackend : VaultBackend {
             importedAtUnixMs = System.currentTimeMillis(),
         )
         mediaBytes[id] = bytes.copyOf()
+        dedupHashes.putIfAbsent(digestHex, id)
         return id
     }
 
