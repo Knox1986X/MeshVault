@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 env:
-  CARGO_TERM_COLOR: always
+  CARGO_TERM_COLOR: never
 
 jobs:
   rust-fmt:
@@ -23,7 +23,16 @@ jobs:
           components: rustfmt
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: |
+          if ! cargo fmt --all -- --check > fmt.log 2>&1; then
+            cat fmt.log
+            python3 -c '
+          import pathlib
+          txt = pathlib.Path("fmt.log").read_text()[:3000].replace("%","%25").replace("\r","%0D").replace("\n","%0A")
+          print(f"::error::{txt}")
+          '
+            exit 1
+          fi
 
   rust-core:
     name: Rust Clippy and Tests
@@ -49,10 +58,28 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: |
+          if ! cargo clippy --workspace --all-targets -- -D warnings > clippy.log 2>&1; then
+            cat clippy.log
+            python3 -c '
+          import pathlib
+          txt = pathlib.Path("clippy.log").read_text()[-3000:].replace("%","%25").replace("\r","%0D").replace("\n","%0A")
+          print(f"::error::{txt}")
+          '
+            exit 1
+          fi
 
       - name: Run unit and integration tests
-        run: cargo test --workspace --verbose
+        run: |
+          if ! cargo test --workspace --verbose > test.log 2>&1; then
+            cat test.log
+            python3 -c '
+          import pathlib
+          txt = pathlib.Path("test.log").read_text()[-3000:].replace("%","%25").replace("\r","%0D").replace("\n","%0A")
+          print(f"::error::{txt}")
+          '
+            exit 1
+          fi
 
       - name: Check CLI build
         run: cargo build --bin meshvault

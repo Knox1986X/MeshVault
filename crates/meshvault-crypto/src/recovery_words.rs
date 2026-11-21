@@ -1,4 +1,5 @@
 /// Standard 2048-word dictionary for 24-word Emergency Recovery Kit.
+#[rustfmt::skip]
 pub(crate) const RECOVERY_WORDLIST: [&str; 2048] = [
     "abandon",
     "ability",
