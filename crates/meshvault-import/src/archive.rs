@@ -38,14 +38,7 @@ pub fn import_tar_bytes_in_ram(
     now_unix_ms: u64,
 ) -> Result<ArchiveImportReport, ImportError> {
     let entries = parse_tar_entries(tar_bytes);
-    import_archive_entries_in_ram(
-        layout,
-        mvk,
-        catalog,
-        entries,
-        target_parent_id,
-        now_unix_ms,
-    )
+    import_archive_entries_in_ram(layout, mvk, catalog, entries, target_parent_id, now_unix_ms)
 }
 
 /// Imports a ZIP (Store / method 0) archive directly from RAM without extracting to disk.
@@ -58,14 +51,7 @@ pub fn import_zip_store_bytes_in_ram(
     now_unix_ms: u64,
 ) -> Result<ArchiveImportReport, ImportError> {
     let entries = parse_zip_store_entries(zip_bytes);
-    import_archive_entries_in_ram(
-        layout,
-        mvk,
-        catalog,
-        entries,
-        target_parent_id,
-        now_unix_ms,
-    )
+    import_archive_entries_in_ram(layout, mvk, catalog, entries, target_parent_id, now_unix_ms)
 }
 
 fn import_archive_entries_in_ram<'a>(

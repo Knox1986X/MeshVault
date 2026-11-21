@@ -1033,12 +1033,9 @@ impl MeshVaultSession {
         let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
         let mvk = guard.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
         let catalog = guard.catalog.as_ref().ok_or(FfiVaultError::VaultLocked)?;
-        Ok(guard.layout.export_folder_tree(
-            mvk,
-            catalog,
-            folder_uuid,
-            &PathBuf::from(dest_dir),
-        )?)
+        Ok(guard
+            .layout
+            .export_folder_tree(mvk, catalog, folder_uuid, &PathBuf::from(dest_dir))?)
     }
 
     /// Lists decrypted security audit log entries in RAM.

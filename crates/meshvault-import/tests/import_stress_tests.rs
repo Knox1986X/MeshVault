@@ -334,13 +334,9 @@ fn archive_takeout_pdf_scanner_and_redaction_work_in_ram() {
     let tmp = TempDir::new().unwrap();
     let layout = VaultLayout::new(tmp.path());
     let pass = SecretString::from("archive-pass".to_string());
-    let (hdr, mvk) = VaultHeader::create_with_passphrase(
-        &pass,
-        Argon2Params::fast_test(),
-        1_700_000_000_000,
-        0,
-    )
-    .unwrap();
+    let (hdr, mvk) =
+        VaultHeader::create_with_passphrase(&pass, Argon2Params::fast_test(), 1_700_000_000_000, 0)
+            .unwrap();
     layout.write_header_pair(&hdr).unwrap();
     let mut catalog = VaultCatalog::new(hdr.vault_id, 1_700_000_000_000);
     let root = catalog.root_folder_id;
@@ -378,9 +374,15 @@ fn archive_takeout_pdf_scanner_and_redaction_work_in_ram() {
         ("Takeout/Vacation/beach.jpg", &jpeg_buf),
         ("Takeout/Vacation/beach.jpg.json", takeout_json),
     ]);
-    let tar_report =
-        import_tar_bytes_in_ram(&layout, &mvk, &mut catalog, &tar_bytes, root, 1_700_000_001_000)
-            .expect("tar import");
+    let tar_report = import_tar_bytes_in_ram(
+        &layout,
+        &mvk,
+        &mut catalog,
+        &tar_bytes,
+        root,
+        1_700_000_001_000,
+    )
+    .expect("tar import");
     assert_eq!(tar_report.imported_files, 1);
     assert_eq!(tar_report.takeout_timestamps_applied, 1);
     let imported = catalog.search_media("beach");

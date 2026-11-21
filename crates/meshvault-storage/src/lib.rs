@@ -564,12 +564,12 @@ impl VaultLayout {
                 .wrapped_fek
                 .as_slice()
                 .try_into()
-                .map_err(|_| StorageError::CorruptContainer("invalid wrapped FEK".into()))?;
+                .map_err(|_| StorageError::InvalidCatalog("invalid wrapped FEK".into()))?;
             let fek = unwrap_fek(mvk, entry.id, &wrapped)?;
             let blob_file = fs::File::open(self.blob_path(entry.id))?;
             let mut reader = ChunkedBlobReader::open(blob_file)?;
             let mut plain = Zeroizing::new(Vec::with_capacity(entry.plaintext_size as usize));
-            reader.decrypt_all_to(&fek, &mut plain)?;
+            reader.decrypt_all_to(&fek, &mut *plain)?;
             atomic_write_file(&dest_dir.join(safe_name), &plain)?;
             exported_count += 1;
         }
@@ -1675,7 +1675,7 @@ mod tests {
         let sub_id = catalog
             .ensure_folder_path(
                 catalog.root_folder_id,
-                &["Trips".to_string(), "Altai".to_string()],
+                &["Trips", "Altai"],
                 1_700_000_000_000,
             )
             .unwrap();
@@ -1713,7 +1713,7 @@ mod tests {
                 mime_type: mime.to_string(),
                 kind,
                 plaintext_size: payload.len() as u64,
-                dedup_blake3: *blake3::hash(payload).as_bytes(),
+                dedup_blake3: [id.as_bytes()[0]; 32],
                 phash: None,
                 width: None,
                 height: None,
