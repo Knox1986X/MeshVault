@@ -1658,8 +1658,7 @@ mod tests {
         use std::io::Cursor;
 
         let dir = std::env::temp_dir().join(format!("mv_stage7_storage_{}", Uuid::new_v4()));
-        let export_dir =
-            std::env::temp_dir().join(format!("mv_stage7_export_{}", Uuid::new_v4()));
+        let export_dir = std::env::temp_dir().join(format!("mv_stage7_export_{}", Uuid::new_v4()));
         let layout = VaultLayout::new(&dir);
         let pass = SecretString::from("rollback-pass".to_string());
         let (hdr, mvk) = VaultHeader::create_with_passphrase(
@@ -1733,7 +1732,10 @@ mod tests {
 
         // 1. Companion linking (RAW + JPEG)
         assert_eq!(catalog.link_companion_media(), 2);
-        assert_eq!(catalog.media.get(&raw_id).unwrap().companion_ids, vec![jpg_id]);
+        assert_eq!(
+            catalog.media.get(&raw_id).unwrap().companion_ids,
+            vec![jpg_id]
+        );
 
         // 2. Non-destructive date edit
         catalog

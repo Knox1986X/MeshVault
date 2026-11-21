@@ -28,4 +28,7 @@ pub enum ImportError {
 
     #[error("simulated process crash after processing {processed} items")]
     SimulatedCrash { processed: usize },
+
+    #[error("invalid image payload: {0}")]
+    InvalidImage(String),
 }
