@@ -102,6 +102,7 @@ pub struct SyncReport {
 pub struct SyncEngine {
     pub device_id: Uuid,
     pub last_synced_epoch: u64,
+    pub last_synced_catalog_revision: u64,
 }
 
 impl SyncEngine {
@@ -109,6 +110,7 @@ impl SyncEngine {
         Self {
             device_id,
             last_synced_epoch,
+            last_synced_catalog_revision: if last_synced_epoch == 0 { 1 } else { 0 },
         }
     }
 
@@ -130,7 +132,11 @@ impl SyncEngine {
 
     fn remote_blob_path(vault_id: Uuid, media_id: Uuid) -> String {
         let hex = media_id.simple().to_string();
-        format!("{}blobs/{}/{hex}.mvb", Self::vault_prefix(vault_id), &hex[..2])
+        format!(
+            "{}blobs/{}/{hex}.mvb",
+            Self::vault_prefix(vault_id),
+            &hex[..2]
+        )
     }
 
     fn remote_thumb_pack_path(vault_id: Uuid, pack_id: Uuid) -> String {
@@ -202,8 +208,13 @@ impl SyncEngine {
             let remote_catalog = VaultCatalog::open(mvk, &remote_catalog_bytes)?;
 
             let remote_changed = remote.epoch > self.last_synced_epoch;
-            let local_changed = local_catalog.catalog_revision > remote.catalog_revision
-                && remote.origin_device_id != self.device_id;
+            let local_changed = if self.last_synced_epoch == 0 {
+                (!local_catalog.media.is_empty() || local_catalog.catalog_revision > 1)
+                    && remote.origin_device_id != self.device_id
+            } else {
+                local_catalog.catalog_revision > self.last_synced_catalog_revision
+                    && remote.origin_device_id != self.device_id
+            };
 
             if remote_changed && local_changed {
                 merge_catalogs_lww(local_catalog, &remote_catalog, remote.origin_device_id);
@@ -328,6 +339,7 @@ impl SyncEngine {
         bytes_transferred += sealed_manifest.len() as u64;
 
         self.last_synced_epoch = next_epoch;
+        self.last_synced_catalog_revision = local_catalog.catalog_revision;
 
         Ok(SyncReport {
             state: if merged_conflict {
