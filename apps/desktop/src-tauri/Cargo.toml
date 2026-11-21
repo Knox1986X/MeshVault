@@ -1,0 +1,25 @@
+[package]
+name = "meshvault-desktop"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "CachyOS Linux Dark Cockpit desktop application for MeshVault (Tauri v2)"
+
+[features]
+default = []
+tauri-app = ["dep:tauri"]
+
+[dependencies]
+meshvault-crypto = { path = "../../../crates/meshvault-crypto" }
+meshvault-import = { path = "../../../crates/meshvault-import" }
+meshvault-storage = { path = "../../../crates/meshvault-storage" }
+meshvault-sync = { path = "../../../crates/meshvault-sync" }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+tauri = { version = "2.1.0", optional = true }
+uuid = { version = "1.16.0", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = "3.19.1"
+
+[workspace]

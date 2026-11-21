@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MeshVault",
+  "version": "0.1.0",
+  "identifier": "io.github.knox1986x.meshvault",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "MeshVault — Zero-Knowledge Cockpit",
+        "width": 1280,
+        "height": 840,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
+        "decorations": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' meshvault:; img-src 'self' meshvault: data: blob:; media-src 'self' meshvault: blob:"
+    }
+  }
+}

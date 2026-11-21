@@ -1,0 +1,18 @@
+[package]
+name = "meshvault-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "MeshVault Format v1 container layout, encrypted folder tree catalog, thumbnail pack descriptors, and integrity scrub types"
+
+[dependencies]
+chacha20poly1305.workspace = true
+meshvault-crypto = { path = "../meshvault-crypto" }
+rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+zeroize.workspace = true

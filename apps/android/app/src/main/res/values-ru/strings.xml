@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MeshVault</string>
+    <string name="alias_notes_name">Заметки</string>
+    <string name="tile_lock_label">Заблокировать сейф</string>
+    <string name="nav_overview">Обзор</string>
+    <string name="nav_gallery">Галерея</string>
+    <string name="nav_folders">Папки</string>
+    <string name="nav_search">Поиск</string>
+    <string name="nav_security">Защита</string>
+    <string name="btn_import">+ Импорт</string>
+    <string name="btn_lock">Заблокировать</string>
+</resources>

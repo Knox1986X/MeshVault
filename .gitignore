@@ -1,0 +1,30 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+Cargo.lock
+
+# Android / Gradle
+apps/android/.gradle/
+apps/android/build/
+apps/android/*/build/
+apps/android/local.properties
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Desktop / Node / Tauri
+apps/desktop/node_modules/
+apps/desktop/dist/
+apps/desktop/.svelte-kit/
+apps/desktop/src-tauri/target/
+
+# Local test vaults and secrets
+*.mvlt
+*.mvb
+*.mvt
+*.mvc
+*.wal
+.env
+.env.*
+secrets/
