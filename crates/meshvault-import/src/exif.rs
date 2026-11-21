@@ -351,6 +351,83 @@ pub fn parse_exif_datetime_unix_ms(s: &str) -> Option<u64> {
     u64::try_from(secs).ok().map(|v| v * 1000)
 }
 
+/// Strips EXIF, GPS, XMP, and comment metadata in RAM for Clean Export without touching disk.
+pub fn strip_metadata_for_clean_export(mime_type: &str, bytes: &[u8]) -> Vec<u8> {
+    if mime_type == "image/jpeg" {
+        if let Some(stripped) = strip_jpeg_metadata_segments(bytes) {
+            return stripped;
+        }
+    }
+
+    if let Ok(img) = image::load_from_memory(bytes) {
+        let fmt = match mime_type {
+            "image/png" => ImageFormat::Png,
+            "image/webp" => ImageFormat::WebP,
+            _ => ImageFormat::Jpeg,
+        };
+        let mut out = Vec::new();
+        if img.write_to(&mut Cursor::new(&mut out), fmt).is_ok() {
+            return out;
+        }
+    }
+
+    bytes.to_vec()
+}
+
+fn strip_jpeg_metadata_segments(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() < 4 || bytes[0] != 0xFF || bytes[1] != 0xD8 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    out.extend_from_slice(&[0xFF, 0xD8]);
+    let mut pos = 2usize;
+
+    while pos + 1 < bytes.len() {
+        if bytes[pos] != 0xFF {
+            return None;
+        }
+        while pos < bytes.len() && bytes[pos] == 0xFF {
+            pos += 1;
+        }
+        if pos >= bytes.len() {
+            break;
+        }
+        let marker = bytes[pos];
+        pos += 1;
+
+        if marker == 0xD9 {
+            out.extend_from_slice(&[0xFF, 0xD9]);
+            return Some(out);
+        }
+        if marker == 0xDA {
+            out.extend_from_slice(&[0xFF, 0xDA]);
+            out.extend_from_slice(&bytes[pos..]);
+            return Some(out);
+        }
+        if marker == 0x00 || (0xD0..=0xD7).contains(&marker) || marker == 0x01 {
+            out.extend_from_slice(&[0xFF, marker]);
+            continue;
+        }
+
+        if pos + 2 > bytes.len() {
+            return None;
+        }
+        let seg_len = u16::from_be_bytes([bytes[pos], bytes[pos + 1]]) as usize;
+        if seg_len < 2 || pos + seg_len > bytes.len() {
+            return None;
+        }
+        // Strip APP1..APP15 (EXIF/XMP/IPTC/ICC/vendor) and COM comments; keep APP0 (JFIF).
+        let is_metadata_marker = (0xE1..=0xEF).contains(&marker) || marker == 0xFE;
+        if !is_metadata_marker {
+            out.extend_from_slice(&[0xFF, marker]);
+            out.extend_from_slice(&bytes[pos..pos + seg_len]);
+        }
+        pos += seg_len;
+    }
+
+    Some(out)
+}
+
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = y - i64::from(m <= 2);
     let era = y.div_euclid(400);

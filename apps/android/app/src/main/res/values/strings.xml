@@ -2,6 +2,7 @@
 <resources>
     <string name="app_name">MeshVault</string>
     <string name="alias_notes_name">Field Notes</string>
+    <string name="tile_lock_label">Lock MeshVault</string>
     <string name="nav_overview">Overview</string>
     <string name="nav_gallery">Gallery</string>
     <string name="nav_folders">Folders</string>

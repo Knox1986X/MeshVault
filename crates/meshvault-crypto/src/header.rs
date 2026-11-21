@@ -213,6 +213,48 @@ impl VaultHeader {
         Ok(slot_id)
     }
 
+    /// Adds an isolated Decoy Vault passphrase slot wrapping an independent `decoy_mvk`.
+    /// Decoy MVK never grants access to real vault blobs or catalog.
+    pub fn add_decoy_slot(
+        &mut self,
+        decoy_passphrase: &SecretString,
+        decoy_mvk: &MasterVaultKey,
+    ) -> Result<Uuid, CryptoError> {
+        let salt = generate_salt();
+        let kek = derive_kek_from_passphrase(decoy_passphrase, &salt, self.argon2_params)?;
+        let slot = wrap_mvk_into_slot(
+            self.vault_id,
+            self.format_version,
+            SlotType::DecoyPassphrase,
+            salt,
+            &kek,
+            decoy_mvk,
+        )?;
+        let slot_id = slot.slot_id;
+        self.slots.push(slot);
+        self.flags |= FLAG_DECOY_AWARE;
+        self.revision = self.revision.saturating_add(1);
+        Ok(slot_id)
+    }
+
+    /// Attempts to unlock the independent Decoy MVK using a decoy passphrase.
+    pub fn unlock_with_decoy_passphrase(
+        &self,
+        passphrase: &SecretString,
+    ) -> Result<MasterVaultKey, CryptoError> {
+        for slot in &self.slots {
+            if slot.slot_type == SlotType::DecoyPassphrase {
+                let kek = derive_kek_from_passphrase(passphrase, &slot.salt, self.argon2_params)?;
+                if let Ok(decoy_mvk) =
+                    unwrap_mvk_from_slot(self.vault_id, self.format_version, slot, &kek)
+                {
+                    return Ok(decoy_mvk);
+                }
+            }
+        }
+        Err(CryptoError::SlotNotFound)
+    }
+
     /// Rotates the passphrase in milliseconds by re-wrapping only the header slot (media untouched).
     pub fn rotate_passphrase(
         &mut self,

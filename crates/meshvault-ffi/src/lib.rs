@@ -6,8 +6,12 @@ use meshvault_crypto::{
     unwrap_fek, Argon2Params, ChunkedBlobReader, KeyWrappingKey, MasterVaultKey, RecoveryKit,
     SecretString, VaultHeader, Zeroize, KEY_LEN, WRAPPED_FEK_LEN,
 };
-use meshvault_import::{DedupPolicy, ImportOptions, ImportPipeline};
-use meshvault_storage::{MediaKind, VaultCatalog, VaultLayout};
+use meshvault_import::{
+    strip_metadata_for_clean_export, DedupPolicy, ImportOptions, ImportPipeline,
+};
+use meshvault_storage::{
+    AuditEventKind, AuditLogEntry, MediaKind, VaultCatalog, VaultLayout,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -158,6 +162,33 @@ pub struct FfiScrubReportDto {
     pub missing_count: u64,
 }
 
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiSimilarGroupDto {
+    pub anchor_dhash_hex: String,
+    pub media_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiAuditEventDto {
+    pub timestamp_unix_ms: u64,
+    pub kind: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiDoctorReportDto {
+    pub primary_header_valid: bool,
+    pub backup_header_valid: bool,
+    pub header_revision: u64,
+    pub key_slot_count: u32,
+    pub decoy_configured: bool,
+    pub media_count: u64,
+    pub trashed_count: u64,
+    pub missing_blobs_count: u64,
+    pub thumb_pack_count: u64,
+    pub wal_pending: bool,
+}
+
 #[derive(Debug, Error, uniffi::Error)]
 #[uniffi(flat_error)]
 pub enum FfiVaultError {
@@ -238,7 +269,7 @@ impl MeshVaultSession {
         }))
     }
 
-    /// Unlocks an existing vault using a master passphrase.
+    /// Unlocks an existing vault using a master passphrase (or decoy passphrase if configured).
     #[uniffi::constructor]
     pub fn unlock_with_passphrase(
         vault_dir: String,
@@ -247,18 +278,48 @@ impl MeshVaultSession {
         let layout = VaultLayout::new(PathBuf::from(vault_dir));
         let header = layout.load_header()?;
         let secret_pass = SecretString::from(passphrase);
-        let mvk = header.unlock_with_passphrase(&secret_pass)?;
-        let catalog = layout.load_catalog(&mvk)?;
 
-        Ok(Arc::new(Self {
-            inner: RwLock::new(SessionInner {
-                state: VaultSecurityState::UnlockedFull,
-                layout,
-                header,
-                mvk: Some(mvk),
-                catalog: Some(catalog),
-            }),
-        }))
+        if let Ok(mvk) = header.unlock_with_passphrase(&secret_pass) {
+            let catalog = layout.load_catalog(&mvk)?;
+            let _ = layout.reset_failed_unlocks();
+            let _ = layout.append_audit_event(
+                &mvk,
+                header.vault_id,
+                AuditLogEntry {
+                    timestamp_unix_ms: catalog.created_at_unix_ms,
+                    kind: AuditEventKind::UnlockSuccess,
+                    detail: "Unlocked full vault with passphrase".to_string(),
+                },
+            );
+            return Ok(Arc::new(Self {
+                inner: RwLock::new(SessionInner {
+                    state: VaultSecurityState::UnlockedFull,
+                    layout,
+                    header,
+                    mvk: Some(mvk),
+                    catalog: Some(catalog),
+                }),
+            }));
+        }
+
+        if let Ok(decoy_mvk) = header.unlock_with_decoy_passphrase(&secret_pass) {
+            let decoy_catalog = layout.load_decoy_catalog(&decoy_mvk)?;
+            let _ = layout.reset_failed_unlocks();
+            return Ok(Arc::new(Self {
+                inner: RwLock::new(SessionInner {
+                    state: VaultSecurityState::UnlockedDecoy,
+                    layout,
+                    header,
+                    mvk: Some(decoy_mvk),
+                    catalog: Some(decoy_catalog),
+                }),
+            }));
+        }
+
+        let _ = layout.record_failed_unlock(header.created_at_unix_ms);
+        Err(FfiVaultError::Crypto(
+            meshvault_crypto::CryptoError::SlotNotFound,
+        ))
     }
 
     /// Unlocks an existing vault using a 32-byte key protected by Android Keystore / BiometricPrompt.
@@ -704,6 +765,271 @@ impl MeshVaultSession {
             corrupted_count: report.corrupted_blobs.len() as u64,
             missing_count: report.missing_blobs.len() as u64,
         })
+    }
+
+    /// Configures an isolated Decoy Vault with an independent MVK and separate catalog.
+    pub fn configure_decoy_vault(
+        &self,
+        decoy_passphrase: String,
+        now_unix_ms: u64,
+    ) -> Result<String, FfiVaultError> {
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
+        if guard.state != VaultSecurityState::UnlockedFull {
+            return Err(FfiVaultError::VaultLocked);
+        }
+        let decoy_mvk = MasterVaultKey::generate();
+        let decoy_secret = SecretString::from(decoy_passphrase);
+        let slot_id = guard.header.add_decoy_slot(&decoy_secret, &decoy_mvk)?;
+        guard.layout.write_header_pair(&guard.header)?;
+
+        let decoy_catalog = VaultCatalog::new(guard.header.vault_id, now_unix_ms);
+        guard
+            .layout
+            .save_decoy_catalog(&decoy_mvk, &decoy_catalog)?;
+        Ok(slot_id.to_string())
+    }
+
+    /// Enters Safe Presentation Lock mode (disables folder exit until re-auth).
+    pub fn enter_safe_presentation(&self) -> Result<(), FfiVaultError> {
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
+        if guard.state == VaultSecurityState::UnlockedFull {
+            guard.state = VaultSecurityState::UnlockedSafePresentation;
+        }
+        Ok(())
+    }
+
+    /// Exits Safe Presentation Lock back to UnlockedFull.
+    pub fn exit_safe_presentation(&self) -> Result<(), FfiVaultError> {
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
+        if guard.state == VaultSecurityState::UnlockedSafePresentation {
+            guard.state = VaultSecurityState::UnlockedFull;
+        }
+        Ok(())
+    }
+
+    /// Moves a media item into the encrypted 30-day Trash.
+    pub fn move_to_trash(
+        &self,
+        media_id: String,
+        now_unix_ms: u64,
+    ) -> Result<(), FfiVaultError> {
+        let uuid = parse_uuid(&media_id)?;
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
+        let inner = &mut *guard;
+        let mvk = inner.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        let catalog = inner.catalog.as_mut().ok_or(FfiVaultError::VaultLocked)?;
+        catalog.move_to_trash(uuid, now_unix_ms)?;
+        save_active_catalog(inner.state, &inner.layout, mvk, catalog)?;
+        Ok(())
+    }
+
+    /// Restores a trashed media item back into active Gallery/Folders.
+    pub fn restore_from_trash(&self, media_id: String) -> Result<(), FfiVaultError> {
+        let uuid = parse_uuid(&media_id)?;
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
+        let inner = &mut *guard;
+        let mvk = inner.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        let catalog = inner.catalog.as_mut().ok_or(FfiVaultError::VaultLocked)?;
+        catalog.restore_from_trash(uuid)?;
+        save_active_catalog(inner.state, &inner.layout, mvk, catalog)?;
+        Ok(())
+    }
+
+    /// Lists media currently in the encrypted Trash.
+    pub fn list_trashed_media(&self) -> Result<Vec<FfiMediaDto>, FfiVaultError> {
+        let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
+        let catalog = guard.catalog.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        Ok(catalog
+            .list_trashed_media()
+            .into_iter()
+            .map(media_to_dto)
+            .collect())
+    }
+
+    /// Cryptographically shreds a media blob and purges its catalog entry.
+    pub fn shred_media(&self, media_id: String) -> Result<(), FfiVaultError> {
+        let uuid = parse_uuid(&media_id)?;
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
+        let inner = &mut *guard;
+        let mvk = inner.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        let catalog = inner.catalog.as_mut().ok_or(FfiVaultError::VaultLocked)?;
+        catalog.shred_media(&inner.layout, uuid)?;
+        save_active_catalog(inner.state, &inner.layout, mvk, catalog)?;
+        Ok(())
+    }
+
+    /// Purges all trashed items older than `retention_days`.
+    pub fn purge_expired_trash(
+        &self,
+        retention_days: u32,
+        now_unix_ms: u64,
+    ) -> Result<u64, FfiVaultError> {
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
+        let inner = &mut *guard;
+        let mvk = inner.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        let catalog = inner.catalog.as_mut().ok_or(FfiVaultError::VaultLocked)?;
+        let purged = catalog.purge_expired_trash(&inner.layout, retention_days, now_unix_ms)?;
+        if purged > 0 {
+            save_active_catalog(inner.state, &inner.layout, mvk, catalog)?;
+            let _ = inner.layout.append_audit_event(
+                mvk,
+                inner.header.vault_id,
+                AuditLogEntry {
+                    timestamp_unix_ms: now_unix_ms,
+                    kind: AuditEventKind::TrashPurged,
+                    detail: format!("Purged {purged} expired trashed items"),
+                },
+            );
+        }
+        Ok(purged)
+    }
+
+    /// Moves a media item into a different encrypted folder.
+    pub fn move_media_to_folder(
+        &self,
+        media_id: String,
+        dest_folder_id: String,
+    ) -> Result<(), FfiVaultError> {
+        let media_uuid = parse_uuid(&media_id)?;
+        let dest_uuid = parse_uuid(&dest_folder_id)?;
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
+        let inner = &mut *guard;
+        let mvk = inner.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        let catalog = inner.catalog.as_mut().ok_or(FfiVaultError::VaultLocked)?;
+        catalog.move_media(media_uuid, dest_uuid)?;
+        save_active_catalog(inner.state, &inner.layout, mvk, catalog)?;
+        Ok(())
+    }
+
+    /// Renames a non-root encrypted folder.
+    pub fn rename_folder(&self, folder_id: String, new_name: String) -> Result<(), FfiVaultError> {
+        let folder_uuid = parse_uuid(&folder_id)?;
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
+        let inner = &mut *guard;
+        let mvk = inner.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        let catalog = inner.catalog.as_mut().ok_or(FfiVaultError::VaultLocked)?;
+        catalog.rename_folder(folder_uuid, new_name)?;
+        save_active_catalog(inner.state, &inner.layout, mvk, catalog)?;
+        Ok(())
+    }
+
+    /// Updates tags and encrypted Markdown note for a media item.
+    pub fn update_media_tags_and_note(
+        &self,
+        media_id: String,
+        tags: Vec<String>,
+        note_markdown: Option<String>,
+    ) -> Result<(), FfiVaultError> {
+        let media_uuid = parse_uuid(&media_id)?;
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
+        let inner = &mut *guard;
+        let mvk = inner.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        let catalog = inner.catalog.as_mut().ok_or(FfiVaultError::VaultLocked)?;
+        catalog.update_media_tags_and_note(media_uuid, tags, note_markdown)?;
+        save_active_catalog(inner.state, &inner.layout, mvk, catalog)?;
+        Ok(())
+    }
+
+    /// Offline search across names, tags, Markdown notes, EXIF camera, and MIME types.
+    pub fn search_media(&self, query: String) -> Result<Vec<FfiMediaDto>, FfiVaultError> {
+        let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
+        let catalog = guard.catalog.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        Ok(catalog
+            .search_media(&query)
+            .into_iter()
+            .map(media_to_dto)
+            .collect())
+    }
+
+    /// Finds groups of visually similar images by 64-bit `dHash` Hamming distance.
+    pub fn find_similar_by_dhash(
+        &self,
+        max_hamming: u32,
+    ) -> Result<Vec<FfiSimilarGroupDto>, FfiVaultError> {
+        let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
+        let catalog = guard.catalog.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        Ok(catalog
+            .find_similar_by_dhash(max_hamming)
+            .into_iter()
+            .map(|g| FfiSimilarGroupDto {
+                anchor_dhash_hex: format!("{:016x}", g.anchor_dhash),
+                media_ids: g.media_ids.into_iter().map(|id| id.to_string()).collect(),
+            })
+            .collect())
+    }
+
+    /// Decrypts media in RAM and strips EXIF/GPS/XMP metadata for Clean Export.
+    pub fn clean_export_media_bytes(&self, media_id: String) -> Result<Vec<u8>, FfiVaultError> {
+        let uuid = parse_uuid(&media_id)?;
+        let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
+        let mvk = guard.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        let catalog = guard.catalog.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        let entry = catalog
+            .media
+            .get(&uuid)
+            .ok_or(FfiVaultError::MediaNotFound(media_id))?;
+        let wrapped: [u8; WRAPPED_FEK_LEN] = entry
+            .wrapped_fek
+            .as_slice()
+            .try_into()
+            .map_err(|_| meshvault_crypto::CryptoError::AuthenticationFailed)?;
+        let fek = unwrap_fek(mvk, uuid, &wrapped)?;
+
+        let blob_file = fs::File::open(guard.layout.blob_path(uuid))?;
+        let mut reader = ChunkedBlobReader::open(blob_file)?;
+        let mut plain = Vec::with_capacity(entry.plaintext_size as usize);
+        reader.decrypt_all_to(&fek, &mut plain)?;
+        let cleaned = strip_metadata_for_clean_export(&entry.mime_type, &plain);
+        plain.zeroize();
+        Ok(cleaned)
+    }
+
+    /// Lists decrypted security audit log entries in RAM.
+    pub fn list_audit_events(&self) -> Result<Vec<FfiAuditEventDto>, FfiVaultError> {
+        let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
+        let mvk = guard.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        let events = guard
+            .layout
+            .load_audit_events(mvk, guard.header.vault_id)?;
+        Ok(events
+            .into_iter()
+            .map(|e| FfiAuditEventDto {
+                timestamp_unix_ms: e.timestamp_unix_ms,
+                kind: format!("{:?}", e.kind),
+                detail: e.detail,
+            })
+            .collect())
+    }
+
+    /// Runs `MeshVault Doctor` diagnostics over header slots, catalog, packs, and WAL.
+    pub fn doctor_report(&self) -> Result<FfiDoctorReportDto, FfiVaultError> {
+        let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
+        let report = guard.layout.doctor_report(guard.catalog.as_ref());
+        Ok(FfiDoctorReportDto {
+            primary_header_valid: report.primary_header_valid,
+            backup_header_valid: report.backup_header_valid,
+            header_revision: report.header_revision,
+            key_slot_count: report.key_slot_count,
+            decoy_configured: report.decoy_configured,
+            media_count: report.media_count,
+            trashed_count: report.trashed_count,
+            missing_blobs_count: report.missing_blobs_count,
+            thumb_pack_count: report.thumb_pack_count,
+            wal_pending: report.wal_pending,
+        })
+    }
+}
+
+fn save_active_catalog(
+    state: VaultSecurityState,
+    layout: &VaultLayout,
+    mvk: &MasterVaultKey,
+    catalog: &VaultCatalog,
+) -> Result<(), meshvault_storage::StorageError> {
+    if state == VaultSecurityState::UnlockedDecoy {
+        layout.save_decoy_catalog(mvk, catalog)
+    } else {
+        layout.save_catalog(mvk, catalog)
     }
 }
 

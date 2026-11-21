@@ -381,3 +381,41 @@ fn explicit_zeroize_wipes_sensitive_key_buffers() {
     mvk.zeroize();
     assert_eq!(mvk.expose(), &[0u8; 32]);
 }
+
+#[test]
+fn decoy_slot_isolates_decoy_mvk_from_real_mvk() {
+    let real_pass = SecretString::from("real-vault-secret".to_string());
+    let decoy_pass = SecretString::from("decoy-pin-1234".to_string());
+    let (mut header, real_mvk) =
+        VaultHeader::create_with_passphrase(&real_pass, fast_test_params(), 1_700_000_000_000, 0)
+            .expect("create header");
+
+    let decoy_mvk = MasterVaultKey::generate();
+    assert_ne!(real_mvk.expose(), decoy_mvk.expose());
+
+    header
+        .add_decoy_slot(&decoy_pass, &decoy_mvk)
+        .expect("add decoy slot");
+    assert_ne!(header.flags & meshvault_crypto::FLAG_DECOY_AWARE, 0);
+
+    // Real passphrase unlocks only real MVK, never decoy slot.
+    let unlocked_real = header
+        .unlock_with_passphrase(&real_pass)
+        .expect("real unlock");
+    assert_eq!(unlocked_real.expose(), real_mvk.expose());
+    assert_eq!(
+        header.unlock_with_decoy_passphrase(&real_pass).unwrap_err(),
+        CryptoError::SlotNotFound
+    );
+
+    // Decoy passphrase unlocks only decoy MVK, never real MVK.
+    let unlocked_decoy = header
+        .unlock_with_decoy_passphrase(&decoy_pass)
+        .expect("decoy unlock");
+    assert_eq!(unlocked_decoy.expose(), decoy_mvk.expose());
+    assert_eq!(
+        header.unlock_with_passphrase(&decoy_pass).unwrap_err(),
+        CryptoError::SlotNotFound
+    );
+}
+

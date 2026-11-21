@@ -2,6 +2,7 @@
 <resources>
     <string name="app_name">MeshVault</string>
     <string name="alias_notes_name">Заметки</string>
+    <string name="tile_lock_label">Заблокировать сейф</string>
     <string name="nav_overview">Обзор</string>
     <string name="nav_gallery">Галерея</string>
     <string name="nav_folders">Папки</string>

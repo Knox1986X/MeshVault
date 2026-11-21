@@ -13,14 +13,22 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -35,6 +43,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.knox1986x.meshvault.security.VaultMediaItem
@@ -44,7 +54,7 @@ import io.github.knox1986x.meshvault.ui.theme.CockpitColors
 
 /**
  * In-memory image viewer with double-tap zoom, pinch zoom, swipe-to-dismiss,
- * and Safe Presentation lock guard.
+ * Clean Export (EXIF/GPS strip), Trash move, and Safe Presentation re-auth unlock.
  */
 @Composable
 fun ViewerScreen(
@@ -52,6 +62,9 @@ fun ViewerScreen(
     safePresentationActive: Boolean,
     loadFullBytes: (String) -> ByteArray,
     onToggleFavorite: (String) -> Unit,
+    onCleanExport: (String) -> Unit,
+    onMoveToTrash: (String) -> Unit,
+    onUnlockSafePresentation: (String) -> Boolean,
     onClose: () -> Unit,
 ) {
     var scale by remember { mutableFloatStateOf(1f) }
@@ -59,6 +72,9 @@ fun ViewerScreen(
     var offsetY by remember { mutableFloatStateOf(0f) }
     var dismissDragY by remember { mutableFloatStateOf(0f) }
     var favorite by remember(media.id) { mutableStateOf(media.favorite) }
+    var showUnlockDialog by remember { mutableStateOf(false) }
+    var unlockInput by remember { mutableStateOf("") }
+    var unlockErr by remember { mutableStateOf<String?>(null) }
 
     val imageBitmap = remember(media.id) {
         val raw = loadFullBytes(media.id)
@@ -171,11 +187,12 @@ fun ViewerScreen(
                     )
                 }
             } else {
-                StatusPill(
-                    label = "Safe Presentation Lock",
-                    dotColor = CockpitColors.Amber,
-                    modifier = Modifier.padding(start = 8.dp),
-                )
+                TextButton(onClick = { showUnlockDialog = true }) {
+                    StatusPill(
+                        label = "Safe Presentation (Выход)",
+                        dotColor = CockpitColors.Amber,
+                    )
+                }
             }
 
             Column(modifier = Modifier.weight(1f).padding(horizontal = 8.dp)) {
@@ -199,19 +216,91 @@ fun ViewerScreen(
             }
 
             if (!safePresentationActive) {
-                IconButton(
-                    onClick = {
-                        favorite = !favorite
-                        onToggleFavorite(media.id)
-                    },
-                ) {
-                    Icon(
-                        imageVector = if (favorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                        contentDescription = "Избранное",
-                        tint = if (favorite) CockpitColors.Red else Color.White,
-                    )
+                Row {
+                    IconButton(onClick = { onCleanExport(media.id) }) {
+                        Icon(
+                            imageVector = Icons.Rounded.Share,
+                            contentDescription = "Чистый экспорт без EXIF",
+                            tint = CockpitColors.Cyan,
+                        )
+                    }
+                    IconButton(
+                        onClick = {
+                            onMoveToTrash(media.id)
+                            onClose()
+                        },
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.DeleteOutline,
+                            contentDescription = "В корзину",
+                            tint = CockpitColors.TextSecondary,
+                        )
+                    }
+                    IconButton(
+                        onClick = {
+                            favorite = !favorite
+                            onToggleFavorite(media.id)
+                        },
+                    ) {
+                        Icon(
+                            imageVector = if (favorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                            contentDescription = "Избранное",
+                            tint = if (favorite) CockpitColors.Red else Color.White,
+                        )
+                    }
                 }
             }
         }
+    }
+
+    if (showUnlockDialog) {
+        AlertDialog(
+            onDismissRequest = { showUnlockDialog = false },
+            containerColor = CockpitColors.CardSurface,
+            title = { Text("Выход из Safe Presentation", color = CockpitColors.TextPrimary) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Подтвердите мастер-пароль, чтобы вернуться к папкам и полному сейфу.",
+                        color = CockpitColors.TextSecondary,
+                        fontSize = 12.sp,
+                    )
+                    OutlinedTextField(
+                        value = unlockInput,
+                        onValueChange = { unlockInput = it },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Password,
+                            autoCorrectEnabled = false,
+                        ),
+                        label = { Text("Мастер-пароль") },
+                    )
+                    unlockErr?.let { Text(it, color = CockpitColors.Red, fontSize = 11.sp) }
+                }
+            },
+            confirmButton = {
+                Button(
+                    shape = RoundedCornerShape(8.dp),
+                    onClick = {
+                        if (onUnlockSafePresentation(unlockInput)) {
+                            unlockInput = ""
+                            unlockErr = null
+                            showUnlockDialog = false
+                            onClose()
+                        } else {
+                            unlockErr = "Неверный мастер-пароль"
+                        }
+                    },
+                ) {
+                    Text("Подтвердить")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUnlockDialog = false }) {
+                    Text("Отмена")
+                }
+            },
+        )
     }
 }

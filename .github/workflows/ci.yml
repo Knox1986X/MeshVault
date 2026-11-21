@@ -69,8 +69,8 @@ jobs:
             exit 1
           fi
 
-      - name: Check CLI build
-        run: cargo build --bin meshvault
+      - name: Check CLI and FFI cdylib builds
+        run: cargo build --bin meshvault -p meshvault-ffi
 
   android-app:
     name: Android Build and Unit Tests

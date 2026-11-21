@@ -48,6 +48,9 @@ pub enum StorageError {
 
     #[error("folder not found: {0}")]
     FolderNotFound(Uuid),
+
+    #[error("media item not found: {0}")]
+    MediaNotFound(Uuid),
 }
 
 /// Canonical filesystem layout of a MeshVault container directory.
@@ -75,6 +78,18 @@ impl VaultLayout {
 
     pub fn catalog_path(&self) -> PathBuf {
         self.root.join("catalog").join("tree.mvc")
+    }
+
+    pub fn decoy_catalog_path(&self) -> PathBuf {
+        self.root.join("catalog").join("decoy.mvc")
+    }
+
+    pub fn audit_log_path(&self) -> PathBuf {
+        self.root.join("catalog").join("audit.mva")
+    }
+
+    pub fn lockout_state_path(&self) -> PathBuf {
+        self.root.join("wal").join("lockout.json")
     }
 
     pub fn blobs_dir(&self) -> PathBuf {
@@ -155,6 +170,148 @@ impl VaultLayout {
     pub fn load_catalog(&self, mvk: &MasterVaultKey) -> Result<VaultCatalog, StorageError> {
         let sealed = fs::read(self.catalog_path())?;
         VaultCatalog::open(mvk, &sealed)
+    }
+
+    /// Seals and atomically writes the isolated Decoy Vault catalog (`catalog/decoy.mvc`).
+    pub fn save_decoy_catalog(
+        &self,
+        decoy_mvk: &MasterVaultKey,
+        catalog: &VaultCatalog,
+    ) -> Result<(), StorageError> {
+        self.ensure_directories()?;
+        let sealed = catalog.seal(decoy_mvk)?;
+        atomic_write_file(&self.decoy_catalog_path(), &sealed)?;
+        Ok(())
+    }
+
+    /// Reads and authenticates `catalog/decoy.mvc` using the decoy MVK.
+    pub fn load_decoy_catalog(
+        &self,
+        decoy_mvk: &MasterVaultKey,
+    ) -> Result<VaultCatalog, StorageError> {
+        let sealed = fs::read(self.decoy_catalog_path())?;
+        VaultCatalog::open(decoy_mvk, &sealed)
+    }
+
+    /// Appends an entry to the encrypted local security audit log (`catalog/audit.mva`).
+    pub fn append_audit_event(
+        &self,
+        mvk: &MasterVaultKey,
+        vault_id: Uuid,
+        entry: AuditLogEntry,
+    ) -> Result<(), StorageError> {
+        self.ensure_directories()?;
+        let mut entries = self.load_audit_events(mvk, vault_id).unwrap_or_default();
+        entries.push(entry);
+        if entries.len() > 2000 {
+            let drain = entries.len() - 2000;
+            entries.drain(0..drain);
+        }
+        let sealed = seal_audit_log(mvk, vault_id, &entries)?;
+        atomic_write_file(&self.audit_log_path(), &sealed)?;
+        Ok(())
+    }
+
+    /// Reads and decrypts the local security audit log into RAM.
+    pub fn load_audit_events(
+        &self,
+        mvk: &MasterVaultKey,
+        vault_id: Uuid,
+    ) -> Result<Vec<AuditLogEntry>, StorageError> {
+        let path = self.audit_log_path();
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let sealed = fs::read(path)?;
+        open_audit_log(mvk, vault_id, &sealed)
+    }
+
+    /// Records a failed unlock attempt and returns the recommended exponential backoff in seconds.
+    pub fn record_failed_unlock(&self, now_unix_ms: u64) -> Result<BruteForceState, StorageError> {
+        self.ensure_directories()?;
+        let mut state = self.load_lockout_state().unwrap_or_default();
+        state.failed_attempts = state.failed_attempts.saturating_add(1);
+        state.last_failed_unix_ms = now_unix_ms;
+        state.backoff_seconds = compute_backoff_seconds(state.failed_attempts);
+        let json = serde_json::to_vec(&state)?;
+        atomic_write_file(&self.lockout_state_path(), &json)?;
+        Ok(state)
+    }
+
+    /// Resets the brute-force delay counter after a successful authentication.
+    pub fn reset_failed_unlocks(&self) -> Result<(), StorageError> {
+        let path = self.lockout_state_path();
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
+    /// Reads current lockout delay state without touching the catalog.
+    pub fn load_lockout_state(&self) -> Result<BruteForceState, StorageError> {
+        let path = self.lockout_state_path();
+        if !path.exists() {
+            return Ok(BruteForceState::default());
+        }
+        let bytes = fs::read(path)?;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    /// Builds a diagnostic report (`MeshVault Doctor`) for header slots, blobs, packs, and trash.
+    pub fn doctor_report(&self, catalog: Option<&VaultCatalog>) -> VaultDoctorReport {
+        let primary_ok = fs::read(self.primary_header_path())
+            .ok()
+            .and_then(|b| VaultHeader::from_bytes(&b).ok());
+        let backup_ok = fs::read(self.backup_header_path())
+            .ok()
+            .and_then(|b| VaultHeader::from_bytes(&b).ok());
+        let header = VaultHeader::select_latest_valid(
+            fs::read(self.primary_header_path()).ok().as_deref(),
+            fs::read(self.backup_header_path()).ok().as_deref(),
+        )
+        .ok();
+
+        let (key_slot_count, decoy_configured, header_revision) = match &header {
+            Some(h) => (
+                h.slots.len() as u32,
+                h.slots
+                    .iter()
+                    .any(|s| s.slot_type == meshvault_crypto::SlotType::DecoyPassphrase),
+                h.revision,
+            ),
+            None => (0, false, 0),
+        };
+
+        let (media_count, trashed_count, missing_blobs_count, thumb_pack_count) = match catalog {
+            Some(cat) => {
+                let metrics = cat.compute_metrics();
+                let missing = cat
+                    .media
+                    .keys()
+                    .filter(|id| !self.blob_path(**id).exists())
+                    .count() as u64;
+                (
+                    metrics.total_media,
+                    metrics.trashed_count,
+                    missing,
+                    cat.thumb_packs.len() as u64,
+                )
+            }
+            None => (0, 0, 0, 0),
+        };
+
+        VaultDoctorReport {
+            primary_header_valid: primary_ok.is_some(),
+            backup_header_valid: backup_ok.is_some(),
+            header_revision,
+            key_slot_count,
+            decoy_configured,
+            media_count,
+            trashed_count,
+            missing_blobs_count,
+            thumb_pack_count,
+            wal_pending: self.import_wal_path().exists(),
+        }
     }
 
     /// Appends an encrypted thumbnail into a 4 MiB `.mvt` pack and returns its `ThumbLocator`.
@@ -627,6 +784,218 @@ impl VaultCatalog {
         items
     }
 
+    /// Moves a media entry into the encrypted 30-day Trash.
+    pub fn move_to_trash(&mut self, media_id: Uuid, now_unix_ms: u64) -> Result<(), StorageError> {
+        let item = self
+            .media
+            .get_mut(&media_id)
+            .ok_or(StorageError::MediaNotFound(media_id))?;
+        item.trashed_at_unix_ms = Some(now_unix_ms);
+        self.catalog_revision = self.catalog_revision.saturating_add(1);
+        Ok(())
+    }
+
+    /// Restores a media entry from Trash back into active Gallery/Folders.
+    pub fn restore_from_trash(&mut self, media_id: Uuid) -> Result<(), StorageError> {
+        let item = self
+            .media
+            .get_mut(&media_id)
+            .ok_or(StorageError::MediaNotFound(media_id))?;
+        item.trashed_at_unix_ms = None;
+        self.catalog_revision = self.catalog_revision.saturating_add(1);
+        Ok(())
+    }
+
+    /// Lists media currently in the encrypted Trash sorted newest-trashed first.
+    pub fn list_trashed_media(&self) -> Vec<&MediaEntry> {
+        let mut items: Vec<&MediaEntry> = self
+            .media
+            .values()
+            .filter(|m| m.trashed_at_unix_ms.is_some())
+            .collect();
+        items.sort_by(|a, b| {
+            b.trashed_at_unix_ms
+                .cmp(&a.trashed_at_unix_ms)
+                .then_with(|| a.original_name.cmp(&b.original_name))
+        });
+        items
+    }
+
+    /// Cryptographically shreds a media item: deletes its `.mvb` blob, clears dedup index, and removes metadata.
+    pub fn shred_media(
+        &mut self,
+        layout: &VaultLayout,
+        media_id: Uuid,
+    ) -> Result<(), StorageError> {
+        let mut entry = self
+            .media
+            .remove(&media_id)
+            .ok_or(StorageError::MediaNotFound(media_id))?;
+        entry.wrapped_fek.fill(0);
+
+        let dedup_key = hex_32(&entry.content_blake3);
+        if self.dedup_index.get(&dedup_key) == Some(&media_id) {
+            self.dedup_index.remove(&dedup_key);
+        }
+
+        let blob = layout.blob_path(media_id);
+        if blob.exists() {
+            fs::remove_file(blob)?;
+        }
+        let part = layout.blob_part_path(media_id);
+        if part.exists() {
+            fs::remove_file(part)?;
+        }
+        self.catalog_revision = self.catalog_revision.saturating_add(1);
+        Ok(())
+    }
+
+    /// Permanently shreds all trashed media older than `retention_days`.
+    pub fn purge_expired_trash(
+        &mut self,
+        layout: &VaultLayout,
+        retention_days: u32,
+        now_unix_ms: u64,
+    ) -> Result<u64, StorageError> {
+        let retention_ms = u64::from(retention_days).saturating_mul(86_400_000);
+        let expired_ids: Vec<Uuid> = self
+            .media
+            .values()
+            .filter_map(|m| {
+                let trashed_at = m.trashed_at_unix_ms?;
+                if now_unix_ms.saturating_sub(trashed_at) >= retention_ms {
+                    Some(m.id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let mut purged = 0u64;
+        for id in expired_ids {
+            self.shred_media(layout, id)?;
+            purged += 1;
+        }
+        Ok(purged)
+    }
+
+    /// Moves a media item into a different folder inside the encrypted catalog.
+    pub fn move_media(
+        &mut self,
+        media_id: Uuid,
+        dest_folder_id: Uuid,
+    ) -> Result<(), StorageError> {
+        if !self.folders.contains_key(&dest_folder_id) {
+            return Err(StorageError::FolderNotFound(dest_folder_id));
+        }
+        let item = self
+            .media
+            .get_mut(&media_id)
+            .ok_or(StorageError::MediaNotFound(media_id))?;
+        item.folder_id = dest_folder_id;
+        self.catalog_revision = self.catalog_revision.saturating_add(1);
+        Ok(())
+    }
+
+    /// Renames an existing non-root folder inside the encrypted catalog.
+    pub fn rename_folder(
+        &mut self,
+        folder_id: Uuid,
+        new_name: impl Into<String>,
+    ) -> Result<(), StorageError> {
+        if folder_id == self.root_folder_id {
+            return Err(StorageError::InvalidCatalog(
+                "cannot rename root folder".to_string(),
+            ));
+        }
+        let folder = self
+            .folders
+            .get_mut(&folder_id)
+            .ok_or(StorageError::FolderNotFound(folder_id))?;
+        folder.name = new_name.into();
+        self.catalog_revision = self.catalog_revision.saturating_add(1);
+        Ok(())
+    }
+
+    /// Updates user tags and encrypted Markdown note attached to a media item.
+    pub fn update_media_tags_and_note(
+        &mut self,
+        media_id: Uuid,
+        tags: Vec<String>,
+        note: Option<String>,
+    ) -> Result<(), StorageError> {
+        let item = self
+            .media
+            .get_mut(&media_id)
+            .ok_or(StorageError::MediaNotFound(media_id))?;
+        item.tags = tags;
+        item.note_markdown = note;
+        self.catalog_revision = self.catalog_revision.saturating_add(1);
+        Ok(())
+    }
+
+    /// Offline full-text search across names, tags, Markdown notes, EXIF camera, and MIME types.
+    pub fn search_media(&self, query: &str) -> Vec<&MediaEntry> {
+        let q = query.trim().to_lowercase();
+        let mut results: Vec<&MediaEntry> = self
+            .timeline_media()
+            .into_iter()
+            .filter(|m| {
+                if q.is_empty() {
+                    return true;
+                }
+                m.original_name.to_lowercase().contains(&q)
+                    || m.mime_type.to_lowercase().contains(&q)
+                    || m.exif_camera
+                        .as_ref()
+                        .is_some_and(|c| c.to_lowercase().contains(&q))
+                    || m.note_markdown
+                        .as_ref()
+                        .is_some_and(|n| n.to_lowercase().contains(&q))
+                    || m.tags.iter().any(|t| t.to_lowercase().contains(&q))
+            })
+            .collect();
+        results.sort_by(|a, b| a.original_name.cmp(&b.original_name));
+        results
+    }
+
+    /// Clusters visually similar photos using Hamming distance over 64-bit `dHash` fingerprints.
+    pub fn find_similar_by_dhash(&self, max_hamming: u32) -> Vec<SimilarMediaGroup> {
+        let candidates: Vec<&MediaEntry> = self
+            .timeline_media()
+            .into_iter()
+            .filter(|m| m.dhash_64.is_some())
+            .collect();
+        let mut visited = vec![false; candidates.len()];
+        let mut groups = Vec::new();
+
+        for i in 0..candidates.len() {
+            if visited[i] {
+                continue;
+            }
+            let h_i = candidates[i].dhash_64.unwrap_or(0);
+            let mut cluster = vec![candidates[i].id];
+            visited[i] = true;
+            for j in (i + 1)..candidates.len() {
+                if visited[j] {
+                    continue;
+                }
+                let h_j = candidates[j].dhash_64.unwrap_or(0);
+                if (h_i ^ h_j).count_ones() <= max_hamming {
+                    cluster.push(candidates[j].id);
+                    visited[j] = true;
+                }
+            }
+            if cluster.len() > 1 {
+                groups.push(SimilarMediaGroup {
+                    anchor_dhash: h_i,
+                    media_ids: cluster,
+                });
+            }
+        }
+        groups
+    }
+
     /// Computes aggregate counts and per-category byte totals for Dark Cockpit metrics and StorageDonut.
     pub fn compute_metrics(&self) -> VaultMetrics {
         let mut metrics = VaultMetrics {
@@ -780,6 +1149,134 @@ pub struct ScrubReport {
     pub missing_blobs: Vec<Uuid>,
 }
 
+/// Group of visually similar media items clustered by 64-bit `dHash` Hamming distance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimilarMediaGroup {
+    pub anchor_dhash: u64,
+    pub media_ids: Vec<Uuid>,
+}
+
+/// Security event recorded in the encrypted local audit log (`catalog/audit.mva`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AuditEventKind {
+    VaultCreated,
+    UnlockSuccess,
+    DecoyUnlock,
+    ScrubCompleted,
+    TrashPurged,
+    CleanExport,
+    PassphraseRotated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditLogEntry {
+    pub timestamp_unix_ms: u64,
+    pub kind: AuditEventKind,
+    pub detail: String,
+}
+
+/// Exponential backoff state persisted in `wal/lockout.json`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BruteForceState {
+    pub failed_attempts: u32,
+    pub last_failed_unix_ms: u64,
+    pub backoff_seconds: u64,
+}
+
+/// Diagnostic snapshot produced by `MeshVault Doctor`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultDoctorReport {
+    pub primary_header_valid: bool,
+    pub backup_header_valid: bool,
+    pub header_revision: u64,
+    pub key_slot_count: u32,
+    pub decoy_configured: bool,
+    pub media_count: u64,
+    pub trashed_count: u64,
+    pub missing_blobs_count: u64,
+    pub thumb_pack_count: u64,
+    pub wal_pending: bool,
+}
+
+pub fn compute_backoff_seconds(failed_attempts: u32) -> u64 {
+    if failed_attempts <= 2 {
+        0
+    } else {
+        let exp = (failed_attempts - 3).min(6);
+        (1u64 << exp).min(60)
+    }
+}
+
+const AUDIT_MAGIC: [u8; 4] = *b"MVA1";
+
+fn seal_audit_log(
+    mvk: &MasterVaultKey,
+    vault_id: Uuid,
+    entries: &[AuditLogEntry],
+) -> Result<Vec<u8>, StorageError> {
+    let audit_key = mvk.derive_audit_log_key();
+    let cipher = XChaCha20Poly1305::new_from_slice(audit_key.expose())
+        .map_err(|_| StorageError::InvalidCatalog("invalid audit key".to_string()))?;
+    let plain = Zeroizing::new(serde_json::to_vec(entries)?);
+    let mut nonce_bytes = [0u8; XNONCE_LEN];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let mut aad = Vec::with_capacity(20);
+    aad.extend_from_slice(&AUDIT_MAGIC);
+    aad.extend_from_slice(vault_id.as_bytes());
+    let ciphertext = cipher
+        .encrypt(
+            XNonce::from_slice(&nonce_bytes),
+            Payload {
+                msg: plain.as_slice(),
+                aad: &aad,
+            },
+        )
+        .map_err(|_| CryptoError::AuthenticationFailed)?;
+    let mut out = Vec::with_capacity(4 + 16 + XNONCE_LEN + ciphertext.len());
+    out.extend_from_slice(&AUDIT_MAGIC);
+    out.extend_from_slice(vault_id.as_bytes());
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+fn open_audit_log(
+    mvk: &MasterVaultKey,
+    vault_id: Uuid,
+    sealed: &[u8],
+) -> Result<Vec<AuditLogEntry>, StorageError> {
+    if sealed.len() < 4 + 16 + XNONCE_LEN + TAG_LEN || sealed[0..4] != AUDIT_MAGIC {
+        return Err(StorageError::InvalidCatalog(
+            "invalid encrypted audit log".to_string(),
+        ));
+    }
+    if sealed[4..20] != *vault_id.as_bytes() {
+        return Err(StorageError::InvalidCatalog(
+            "audit log vault_id mismatch".to_string(),
+        ));
+    }
+    let audit_key = mvk.derive_audit_log_key();
+    let cipher = XChaCha20Poly1305::new_from_slice(audit_key.expose())
+        .map_err(|_| StorageError::InvalidCatalog("invalid audit key".to_string()))?;
+    let nonce = XNonce::from_slice(&sealed[20..20 + XNONCE_LEN]);
+    let ciphertext = &sealed[20 + XNONCE_LEN..];
+    let mut aad = Vec::with_capacity(20);
+    aad.extend_from_slice(&AUDIT_MAGIC);
+    aad.extend_from_slice(vault_id.as_bytes());
+    let plain = Zeroizing::new(
+        cipher
+            .decrypt(
+                nonce,
+                Payload {
+                    msg: ciphertext,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| CryptoError::AuthenticationFailed)?,
+    );
+    Ok(serde_json::from_slice(&plain)?)
+}
+
 fn catalog_aad(vault_id: Uuid, revision: u64) -> Vec<u8> {
     let mut aad = Vec::with_capacity(CATALOG_AAD_PREFIX.len() + 16 + 8);
     aad.extend_from_slice(CATALOG_AAD_PREFIX);
@@ -887,6 +1384,123 @@ mod tests {
             .read_thumbnail(&mvk, &catalog, media_id, locator)
             .expect("read thumb");
         assert_eq!(&*plain, secret_thumb);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trash_shred_dhash_search_audit_and_doctor_work() {
+        let dir = std::env::temp_dir().join(format!("mv_stage4_storage_{}", Uuid::new_v4()));
+        let layout = VaultLayout::new(&dir);
+        let mvk = MasterVaultKey::generate();
+        let vault_id = Uuid::new_v4();
+        let mut catalog = VaultCatalog::new(vault_id, 1_700_000_000_000);
+
+        let m1 = Uuid::new_v4();
+        let m2 = Uuid::new_v4();
+        let folder = catalog.root_folder_id;
+        let fek = FileEncryptionKey::generate();
+        let wrapped = wrap_fek(&mvk, m1, &fek).unwrap().to_vec();
+
+        fs::create_dir_all(layout.blob_path(m1).parent().unwrap()).unwrap();
+        fs::write(layout.blob_path(m1), b"encrypted-blob-1").unwrap();
+        fs::create_dir_all(layout.blob_path(m2).parent().unwrap()).unwrap();
+        fs::write(layout.blob_path(m2), b"encrypted-blob-2").unwrap();
+
+        catalog.media.insert(
+            m1,
+            MediaEntry {
+                id: m1,
+                folder_id: folder,
+                original_name: "passport_scan.jpg".to_string(),
+                mime_type: "image/jpeg".to_string(),
+                kind: MediaKind::Photo,
+                plaintext_size: 1024,
+                content_blake3: [0x11; 32],
+                dhash_64: Some(0xFFFF_0000_0000_0000),
+                wrapped_fek: wrapped.clone(),
+                chunk_size: 1024 * 1024,
+                thumb: None,
+                micro_thumb: None,
+                exif_camera: Some("Pixel 9 Pro".to_string()),
+                captured_at_unix_ms: Some(1_700_000_100_000),
+                imported_at_unix_ms: 1_700_000_100_000,
+                favorite: false,
+                trashed_at_unix_ms: None,
+                tags: vec!["documents".to_string()],
+                note_markdown: Some("Confidential trip visa".to_string()),
+            },
+        );
+        catalog.media.insert(
+            m2,
+            MediaEntry {
+                id: m2,
+                folder_id: folder,
+                original_name: "passport_scan_2.jpg".to_string(),
+                mime_type: "image/jpeg".to_string(),
+                kind: MediaKind::Photo,
+                plaintext_size: 1024,
+                content_blake3: [0x22; 32],
+                dhash_64: Some(0xFFFF_0000_0000_0003),
+                wrapped_fek: wrapped,
+                chunk_size: 1024 * 1024,
+                thumb: None,
+                micro_thumb: None,
+                exif_camera: None,
+                captured_at_unix_ms: Some(1_700_000_200_000),
+                imported_at_unix_ms: 1_700_000_200_000,
+                favorite: false,
+                trashed_at_unix_ms: None,
+                tags: vec![],
+                note_markdown: None,
+            },
+        );
+        catalog.dedup_index.insert(hex_32(&[0x11; 32]), m1);
+
+        // Search and dHash clustering
+        assert_eq!(catalog.search_media("visa").len(), 1);
+        let groups = catalog.find_similar_by_dhash(4);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].media_ids.len(), 2);
+
+        // Trash + expired purge shred
+        catalog.move_to_trash(m1, 1_700_000_000_000).unwrap();
+        assert_eq!(catalog.timeline_media().len(), 1);
+        assert_eq!(catalog.list_trashed_media().len(), 1);
+        let purged = catalog
+            .purge_expired_trash(&layout, 30, 1_700_000_000_000 + 31 * 86_400_000)
+            .unwrap();
+        assert_eq!(purged, 1);
+        assert!(!layout.blob_path(m1).exists());
+        assert!(!catalog.dedup_index.contains_key(&hex_32(&[0x11; 32])));
+
+        // Encrypted audit log hides text on disk
+        layout
+            .append_audit_event(
+                &mvk,
+                vault_id,
+                AuditLogEntry {
+                    timestamp_unix_ms: 1_700_000_500_000,
+                    kind: AuditEventKind::TrashPurged,
+                    detail: "SECRET_AUDIT_DETAIL".to_string(),
+                },
+            )
+            .unwrap();
+        let disk_audit = fs::read(layout.audit_log_path()).unwrap();
+        assert!(!disk_audit
+            .windows(b"SECRET_AUDIT_DETAIL".len())
+            .any(|w| w == b"SECRET_AUDIT_DETAIL"));
+        assert_eq!(layout.load_audit_events(&mvk, vault_id).unwrap().len(), 1);
+
+        // Brute-force backoff schedule
+        assert_eq!(compute_backoff_seconds(2), 0);
+        assert_eq!(compute_backoff_seconds(3), 1);
+        assert_eq!(compute_backoff_seconds(5), 4);
+        assert_eq!(compute_backoff_seconds(20), 60);
+
+        let doctor = layout.doctor_report(Some(&catalog));
+        assert_eq!(doctor.media_count, 1);
+        assert_eq!(doctor.missing_blobs_count, 0);
 
         let _ = fs::remove_dir_all(&dir);
     }

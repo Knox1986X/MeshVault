@@ -116,3 +116,117 @@ fn ffi_session_lifecycle_import_read_lock_and_recovery() {
         b"# Flight Ticket"
     );
 }
+
+#[test]
+fn ffi_stage4_decoy_trash_clean_export_and_doctor() {
+    let vault_tmp = TempDir::new().expect("vault dir");
+    let vault_path = vault_tmp.path().to_string_lossy().to_string();
+    let session = MeshVaultSession::create_new(
+        vault_path.clone(),
+        "real-pass".to_string(),
+        1_700_000_000_000,
+        true,
+    )
+    .expect("create");
+
+    // Configure Decoy Vault with independent MVK and separate catalog.
+    session
+        .configure_decoy_vault("decoy-pin".to_string(), 1_700_000_000_100)
+        .expect("decoy");
+
+    // Build a minimal JPEG with APP1 EXIF camera "SecretCam".
+    let exif_tiff = {
+        let mut t = Vec::new();
+        t.extend_from_slice(b"MM\x00\x2A");
+        t.extend_from_slice(&8u32.to_be_bytes());
+        t.extend_from_slice(&1u16.to_be_bytes());
+        // Tag 0x0110 (Model), ASCII (2), count 10, offset 26
+        t.extend_from_slice(&0x0110u16.to_be_bytes());
+        t.extend_from_slice(&2u16.to_be_bytes());
+        t.extend_from_slice(&10u32.to_be_bytes());
+        t.extend_from_slice(&26u32.to_be_bytes());
+        t.extend_from_slice(&0u32.to_be_bytes());
+        t.extend_from_slice(b"SecretCam\0");
+        t
+    };
+    let mut app1_payload = b"Exif\0\0".to_vec();
+    app1_payload.extend_from_slice(&exif_tiff);
+    let app1_len = (app1_payload.len() + 2) as u16;
+    let mut sample_jpeg = vec![0xFF, 0xD8, 0xFF, 0xE1];
+    sample_jpeg.extend_from_slice(&app1_len.to_be_bytes());
+    sample_jpeg.extend_from_slice(&app1_payload);
+    sample_jpeg.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00]);
+    sample_jpeg.extend_from_slice(&[0xFF, 0xD9]);
+
+    let root = session.root_folder_id().expect("root");
+    let imported = session
+        .import_bytes_item(
+            root.clone(),
+            vec!["Private".to_string()],
+            "camera.jpg".to_string(),
+            sample_jpeg,
+            FfiDedupPolicy::SkipDuplicate,
+            None,
+            1_700_000_001_000,
+        )
+        .expect("import jpeg");
+
+    // Verify Clean Export strips APP1 EXIF segment in RAM.
+    let cleaned = session
+        .clean_export_media_bytes(imported.media_id.clone())
+        .expect("clean export");
+    assert!(meshvault_import::parse_jpeg_exif(&cleaned)
+        .camera
+        .is_none());
+
+    // Tagging, search, Safe Presentation, and Doctor report.
+    session
+        .update_media_tags_and_note(
+            imported.media_id.clone(),
+            vec!["travel".to_string()],
+            Some("Border crossing scan".to_string()),
+        )
+        .expect("update tags");
+    assert_eq!(session.search_media("border".to_string()).unwrap().len(), 1);
+
+    session.enter_safe_presentation().expect("enter safe");
+    assert_eq!(
+        session.security_state(),
+        VaultSecurityState::UnlockedSafePresentation
+    );
+    session.exit_safe_presentation().expect("exit safe");
+    assert_eq!(session.security_state(), VaultSecurityState::UnlockedFull);
+
+    let doctor = session.doctor_report().expect("doctor");
+    assert!(doctor.primary_header_valid);
+    assert!(doctor.backup_header_valid);
+    assert!(doctor.decoy_configured);
+    assert_eq!(doctor.media_count, 1);
+
+    // Move to Trash -> list -> restore -> move again -> shred after 31 days.
+    session
+        .move_to_trash(imported.media_id.clone(), 1_700_000_100_000)
+        .expect("trash");
+    assert_eq!(session.list_trashed_media().unwrap().len(), 1);
+    session
+        .restore_from_trash(imported.media_id.clone())
+        .expect("restore");
+    assert_eq!(session.list_trashed_media().unwrap().len(), 0);
+    session
+        .move_to_trash(imported.media_id, 1_700_000_100_000)
+        .expect("trash again");
+    let purged = session
+        .purge_expired_trash(30, 1_700_000_100_000 + 31 * 86_400_000)
+        .expect("purge");
+    assert_eq!(purged, 1);
+
+    session.lock();
+
+    // Unlocking with decoy passphrase opens an empty Decoy catalog without seeing real folders.
+    let decoy = MeshVaultSession::unlock_with_passphrase(vault_path, "decoy-pin".to_string())
+        .expect("unlock decoy");
+    assert_eq!(decoy.security_state(), VaultSecurityState::UnlockedDecoy);
+    assert_eq!(decoy.vault_metrics().unwrap().total_media, 0);
+    assert_eq!(decoy.list_all_media_timeline().unwrap().len(), 0);
+}
+

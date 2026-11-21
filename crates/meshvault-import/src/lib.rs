@@ -7,7 +7,8 @@ pub mod wal;
 pub use error::ImportError;
 pub use exif::{
     classify_by_extension, compute_dhash_64, extract_metadata_and_thumbnails,
-    parse_exif_datetime_unix_ms, parse_jpeg_exif, ExtractedMediaMeta, ParsedExif,
+    parse_exif_datetime_unix_ms, parse_jpeg_exif, strip_metadata_for_clean_export,
+    ExtractedMediaMeta, ParsedExif,
 };
 pub use pipeline::{
     generate_synthetic_tree, ImportOptions, ImportPipeline, ImportReport, QuarantinedItem,

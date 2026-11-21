@@ -1,15 +1,20 @@
 package io.github.knox1986x.meshvault
 
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
 import android.os.Bundle
 import android.os.StatFs
 import android.provider.OpenableColumns
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -63,12 +68,17 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.knox1986x.meshvault.saf.SafTreePreview
 import io.github.knox1986x.meshvault.saf.SafTreeScanner
+import io.github.knox1986x.meshvault.security.AppIconSwitcher
+import io.github.knox1986x.meshvault.security.ClipboardGuard
 import io.github.knox1986x.meshvault.security.DedupPolicy
+import io.github.knox1986x.meshvault.security.FlipToLockDetector
 import io.github.knox1986x.meshvault.security.InMemoryVaultBackend
 import io.github.knox1986x.meshvault.security.KeystoreVaultWrapper
+import io.github.knox1986x.meshvault.security.LockTileService
 import io.github.knox1986x.meshvault.security.VaultBackend
 import io.github.knox1986x.meshvault.security.VaultMediaItem
 import io.github.knox1986x.meshvault.security.VaultSecurityState
+import io.github.knox1986x.meshvault.workers.VaultMaintenanceWorker
 import io.github.knox1986x.meshvault.ui.components.StatusPill
 import io.github.knox1986x.meshvault.ui.screens.FoldersScreen
 import io.github.knox1986x.meshvault.ui.screens.GalleryScreen
@@ -102,6 +112,7 @@ class MainActivity : FragmentActivity() {
             WindowManager.LayoutParams.FLAG_SECURE,
         )
 
+        VaultMaintenanceWorker.schedulePeriodic(this)
         val sharedUris = extractSharedUris(intent)
 
         setContent {
@@ -141,12 +152,14 @@ fun MeshVaultAppRoot(
     var activeMediaViewer by remember { mutableStateOf<VaultMediaItem?>(null) }
     var showImportModeChooser by remember { mutableStateOf(false) }
     var pendingSafPreview by remember { mutableStateOf<SafTreePreview?>(null) }
+    var disguisedNotesIcon by remember { mutableStateOf(false) }
+    var flipToLockEnabled by remember { mutableStateOf(true) }
 
     val keystoreWrapper = remember(selectedVaultName) {
         KeystoreVaultWrapper(context, selectedVaultName)
     }
 
-    // Auto-lock immediately when app moves to background.
+    // Auto-lock immediately when app moves to background, and listen for Quick Settings lock tile.
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_STOP && securityState != VaultSecurityState.LOCKED) {
@@ -155,8 +168,40 @@ fun MeshVaultAppRoot(
                 securityState = backend.securityState
             }
         }
+        val lockReceiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                if (intent?.action == LockTileService.ACTION_EMERGENCY_LOCK) {
+                    backend.lock()
+                    activeMediaViewer = null
+                    securityState = backend.securityState
+                }
+            }
+        }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        ContextCompat.registerReceiver(
+            context,
+            lockReceiver,
+            IntentFilter(LockTileService.ACTION_EMERGENCY_LOCK),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            context.unregisterReceiver(lockReceiver)
+        }
+    }
+
+    // Optional Flip-to-Lock emergency sensor when vault is unlocked.
+    DisposableEffect(flipToLockEnabled, securityState) {
+        val detector = if (flipToLockEnabled && securityState != VaultSecurityState.LOCKED) {
+            FlipToLockDetector(context) {
+                backend.lock()
+                activeMediaViewer = null
+                securityState = backend.securityState
+            }.also { it.start() }
+        } else {
+            null
+        }
+        onDispose { detector?.stop() }
     }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
@@ -237,6 +282,27 @@ fun MeshVaultAppRoot(
             onToggleFavorite = {
                 backend.toggleFavorite(it)
                 refreshTick++
+            },
+            onCleanExport = { mediaId ->
+                val cleanBytes = backend.cleanExportBytes(mediaId)
+                val sizeKb = cleanBytes.size / 1024
+                cleanBytes.fill(0)
+                Toast.makeText(
+                    context,
+                    "Чистый экспорт подготовлен в ОЗУ ($sizeKb КБ, EXIF/GPS удалены)",
+                    Toast.LENGTH_SHORT,
+                ).show()
+            },
+            onMoveToTrash = { mediaId ->
+                backend.moveToTrash(mediaId)
+                refreshTick++
+            },
+            onUnlockSafePresentation = { pass ->
+                val ok = backend.exitSafePresentationWithPassphrase(pass)
+                if (ok) {
+                    securityState = backend.securityState
+                }
+                ok
             },
             onClose = { activeMediaViewer = null },
         )
@@ -400,8 +466,41 @@ fun MeshVaultAppRoot(
 
                         CockpitTab.SECURITY -> SecurityScreen(
                             biometricEnrolled = keystoreWrapper.hasEnrolledSlot(),
+                            disguisedNotesIcon = disguisedNotesIcon,
+                            flipToLockEnabled = flipToLockEnabled,
+                            trashedItems = remember(refreshTick) { backend.listTrashedMedia() },
+                            onToggleDisguisedIcon = { next ->
+                                disguisedNotesIcon = next
+                                AppIconSwitcher.setDisguisedNotesMode(context, next)
+                            },
+                            onToggleFlipToLock = { flipToLockEnabled = it },
+                            onConfigureDecoyVault = { decoyPin ->
+                                backend.configureDecoyVault(decoyPin)
+                                refreshTick++
+                            },
+                            onRestoreTrashed = { id ->
+                                backend.restoreFromTrash(id)
+                                refreshTick++
+                            },
+                            onShredTrashed = { id ->
+                                backend.shredMedia(id)
+                                refreshTick++
+                            },
                             onRunScrub = { backend.scrubVault() },
+                            onRunDoctor = { backend.doctorReport() },
                             onGenerateRecoveryKit = { backend.generateRecoveryKit() },
+                            onCopySensitive = { secretText ->
+                                ClipboardGuard.copySensitiveAndScheduleClear(
+                                    context = context,
+                                    label = "MeshVault Recovery Kit",
+                                    value = secretText,
+                                )
+                                Toast.makeText(
+                                    context,
+                                    "Скопировано; буфер очистится через 30с",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            },
                             onEnterSafePresentation = {
                                 val first = timeline.firstOrNull()
                                 if (first != null) {
