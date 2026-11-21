@@ -21,7 +21,7 @@
 | 10 | Связывание составных медиа (Live/Motion Photos, RAW+JPEG+XMP, видео+субтитры) в единую карточку | Этап 4 | Запланировано | Парсер-тест группировки парных файлов |
 | 11 | Карантин проблемных файлов (битые, 0 байт, облачные ярлыки SAF) с отчётом и повтором | Этап 2 | Проверено тестом | Тест перевода 0-байтных и нечитаемых файлов в `Quarantined` без остановки импорта |
 | 12 | Наблюдаемые «Входящие папки» (Inbox Folders) с предложением зашифровать новые файлы в 1 тап | Этап 4 | Запланировано | Тест WorkManager/наблюдателя каталога |
-| 13 | Приём файлов и папок через системное меню «Поделиться» на Android и Drag-and-Drop на CachyOS | Этап 3 | В каркасе | `ACTION_SEND`/`ACTION_SEND_MULTIPLE` в AndroidManifest и `MainActivity`; D&D CachyOS на этапе 6 |
+| 13 | Приём файлов и папок через системное меню «Поделиться» на Android и Drag-and-Drop на CachyOS | Этап 6 | Проверено тестом | `ACTION_SEND`/`ACTION_SEND_MULTIPLE` на Android; `DesktopVaultBridge::import_dropped_paths` и `App.svelte` на CachyOS |
 | 14 | Импорт из ZIP/TAR-архивов (включая Google Takeout с JSON-метаданными) без распаковки открытых файлов на диск | Этап 4 | Запланировано | Потоковый тест распаковки в ОЗУ без temp-файлов |
 
 ## Раздел B. Безопасность ключей и живучесть хранилища
@@ -33,20 +33,20 @@
 | 17 | Генерация офлайн-ключа восстановления (Emergency Recovery Kit из 24 слов + проверочный экран) | Этап 1 | Проверено тестом | Тест генерации, контрольной суммы SHA-256 и восстановления MVK |
 | 18 | Фоновая самопроверка целостности (Vault Scrub) тегов Poly1305 всех чанков и заголовков | Этап 1 | Проверено тестом | Тест `ChunkedBlobReader::verify_all_chunks` и `ScrubReport` |
 | 19 | Двойной заголовок хранилища (`vault.header` и `vault.header.bak`) с атомарным обновлением ревизий | Этап 1 | Проверено тестом | Тест `VaultHeader::select_latest_valid` при порче основного файла |
-| 20 | Очистка секретов в ОЗУ (`zeroize`), запрет core dump и `mlock` для ключей на CachyOS | Этап 1 | Проверено тестом | Тест `Zeroize` в `meshvault-crypto`; `mlock` добавляется на этапе 6 |
+| 20 | Очистка секретов в ОЗУ (`zeroize`), запрет core dump и `mlock` для ключей на CachyOS | Этап 6 | Проверено тестом | Тест `Zeroize` + `linux_mem_guard_locks_secret_and_disables_core_dumps` (`prctl` + `mlock` + `LockedSecretBox`) |
 | 21 | Опциональный режим скрытия размеров файлов (выравнивание паков и паддинг чанков) перед облаком | Этап 5 | Проверено тестом | Аутентифицированный `MVPD` паддинг до бакета в `encode_padded_cloud_envelope` и тест |
 | 22 | Поддержка аппаратных ключей FIDO2 / YubiKey (NFC/USB на Android, USB HID на CachyOS) | Этап 4 | В каркасе | Слот `SlotType::Fido2Hmac` и тест обёртки |
 | 23 | Зашифрованная Корзина с настраиваемым сроком хранения (7, 30, 90 дней) и мгновенным криптоуничтожением | Этап 4 | Проверено тестом | Тесты `trash_shred_dhash_search_audit_and_doctor_work` и `ffi_stage4_decoy_trash_clean_export_and_doctor` |
-| 24 | Открытая документация `docs/FORMAT.md` и автономная CLI-утилита аварийной расшифровки без GUI | Этап 1 | В каркасе | Наличие `docs/FORMAT.md` и каркаса `meshvault-cli` |
+| 24 | Открытая документация `docs/FORMAT.md` и автономная CLI-утилита аварийной расшифровки без GUI | Этап 6 | Проверено тестом | `docs/FORMAT.md` и полнофункциональный `meshvault-cli` (`export`, `scrub`, `doctor`) с E2E-тестом |
 
 ## Раздел C. Защита экрана, анти-принуждение и приватность в жизни
 
 | ID | Требование | Этап | Статус | Способ проверки |
 | :--- | :--- | :--- | :--- | :--- |
-| 25 | Принудительный `FLAG_SECURE` на Android и скрытие окна при потере фокуса на CachyOS | Этап 3 | В каркасе | `WindowManager.LayoutParams.FLAG_SECURE` в `MainActivity.onCreate`; CachyOS на этапе 6 |
+| 25 | Принудительный `FLAG_SECURE` на Android и скрытие окна при потере фокуса на CachyOS | Этап 6 | Проверено тестом | `FLAG_SECURE` в `MainActivity`; шторка `onWindowBlur` в `desktop_cockpit.test.mjs` |
 | 26 | Режим «Безопасный показ» (Safe Presentation Lock) с блокировкой выхода в папки до биометрии/PIN | Этап 4 | Проверено тестом | Тесты `ffi_stage4_decoy_trash_clean_export_and_doctor`, `SecurityGuardsTest` и диалог разблокировки `ViewerScreen` |
 | 27 | Опциональный Ложный сейф (Decoy Vault) по отдельному PIN с честным пояснением модели угроз | Этап 4 | Проверено тестом | Тесты `decoy_slot_isolates_decoy_mvk_from_real_mvk`, FFI и `SecurityGuardsTest` |
-| 28 | Экстренная блокировка: Flip-to-Lock, плитка QS Android, кнопка в шапке и хоткей `Ctrl+L` на CachyOS | Этап 4 | В каркасе | `FlipToLockDetector` + `LockTileService` + кнопка блокировки в шапке; CachyOS `Ctrl+L` на этапе 6 |
+| 28 | Экстренная блокировка: Flip-to-Lock, плитка QS Android, кнопка в шапке и хоткей `Ctrl+L` на CachyOS | Этап 6 | Проверено тестом | `FlipToLockDetector` + `LockTileService` + хоткей `Ctrl+L` в `desktop_cockpit.test.mjs` |
 | 29 | Гибкий автолок: при гашении экрана, по таймеру 0–30с, по неактивности или при подключении USB | Этап 3 | В каркасе | `Lifecycle.Event.ON_STOP` автолок в `MainActivity` + `FlipToLockDetector` |
 | 30 | Слой «Скрытые папки внутри сейфа» (Blur Shield) с размытием обложек до доп. подтверждения | Этап 3 | В каркасе | `set_folder_blur_shield` в FFI и отображение маскировки в `FolderTreeCard` |
 | 31 | Приватный режим ввода для клавиатуры (запрет обучения и автоподсказок на именах, тегах и заметках) | Этап 3 | В каркасе | `autoCorrectEnabled = false` и пароль-клавиатура в `UnlockScreen` |
@@ -84,7 +84,7 @@
 | 53 | Встроенный режим «Сканер документов» с выравниванием перспективы и сохранением в зашифрованный PDF | Этап 4 | Запланировано | Тест генерации PDF в ОЗУ и шифрования в сейф |
 | 54 | Локальный неразрушающий фоторедактор с приватной ретушью лиц, подписей и номеров | Этап 4 | Запланировано | Тест сохранения ревизии без выхода из сейфа |
 | 55 | Просмотр Live/Motion Photos и покадровый шаг на видео с сохранением стоп-кадра в текущую папку | Этап 4 | Запланировано | Тест извлечения кадра в ОЗУ |
-| 56 | Режим сравнения двух снимков рядом (Side-by-Side с синхронным зумом) на планшетах и CachyOS | Этап 6 | Запланировано | Тест UI-компонента синхронного просмотра |
+| 56 | Режим сравнения двух снимков рядом (Side-by-Side с синхронным зумом) на планшетах и CachyOS | Этап 6 | Проверено тестом | `App.svelte` Side-by-Side + `adjustSideBySideZoom` в `desktop_cockpit.test.mjs` |
 | 57 | Встроенная защищённая камера для съёмки напрямую в зашифрованный контейнер | Этап 4 | Запланировано | Тест CameraX-пайплайна в шифрованный поток |
 | 58 | Настраиваемое слайд-шоу по папке с рекурсивным обходом подпапок | Этап 4 | Запланировано | Тест итератора медиа по поддереву |
 
@@ -105,17 +105,17 @@
 | :--- | :--- | :--- | :--- | :--- |
 | 65 | Единая дизайн-система Dark Cockpit (`#0b0b14`, StatusPill, MetricCard, StorageDonut, TelemetryChart) | Этап 3 | В каркасе | `CockpitTheme.kt` и `CockpitComponents.kt` собраны в APK |
 | 66 | Адаптивная навигация: нижняя панель на смартфоне, левый сайдбар 260px на планшете и CachyOS | Этап 3 | В каркасе | `BoxWithConstraints` (`600.dp`) в `MainActivity.kt` |
-| 67 | Десктоп CachyOS на Tauri v2 + Svelte + TS с клавиатурной навигацией (`hjkl`, `Space`, `1–9`, `Ctrl+F`, `Ctrl+L`) | Этап 6 | Запланировано | E2E-тест горячих клавиш и потокового протокола |
-| 68 | Интеграция CachyOS с Secret Service (KWallet/GNOME Keyring), Wayland и запрет индексации поисковиками | Этап 6 | Запланировано | Проверка `.nomedia` / XDG-исключений и Secret Service |
-| 69 | Полноценный CLI `meshvault` (`init`, `unlock`, `lock`, `status`, `doctor`, `import`, `tree`, `ls`, `scrub`, `sync`, `export`) | Этап 6 | В каркасе | Сборка `meshvault-cli` и интеграционные CLI-тесты JSON-вывода |
+| 67 | Десктоп CachyOS на Tauri v2 + Svelte + TS с клавиатурной навигацией (`hjkl`, `Space`, `1–9`, `Ctrl+F`, `Ctrl+L`) | Этап 6 | Проверено тестом | `apps/desktop` (Tauri v2 + Svelte + `cockpitState.mjs`) + тест `desktop_cockpit.test.mjs` и `desktop_bridge` |
+| 68 | Интеграция CachyOS с Secret Service (KWallet/GNOME Keyring), Wayland и запрет индексации поисковиками | Этап 6 | Проверено тестом | `SecretServiceBridge` (`secret-tool`) + `.nomedia`/`.noindex` в `DesktopVaultBridge` и `meshvault init` |
+| 69 | Полноценный CLI `meshvault` (`init`, `unlock`, `lock`, `status`, `doctor`, `import`, `tree`, `ls`, `scrub`, `sync`, `export`) | Этап 6 | Проверено тестом | `crates/meshvault-cli` (13 подкоманд с `--json`) и E2E-тест `cli_e2e_tests.rs` |
 | 70 | Аппаратное ускорение и контроль нагрева/батареи в Foreground Service Android с паузой | Этап 3 | Запланировано | Профилирование импорта и тест Foreground Service |
 | 71 | Строгий запрет аналитики, рекламы, трекеров и фоновой сети без явного включения sync | Этап 1 | Проверено тестом | Аудит зависимостей `Cargo.toml` и сетевых разрешений |
 | 72 | Диагностика хранилища (MeshVault Doctor): слоты ключей, место, индекс, несинхронизированные чанки | Этап 4 | Проверено тестом | `VaultLayout::doctor_report` + FFI + кнопка `MeshVault Doctor` в `SecurityScreen` |
 | 73 | Полная локализация RU и EN с правильными формами числительных русского языка | Этап 3 | Проверено тестом | `RussianPluralsTest.kt` + `values/strings.xml` и `values-ru/strings.xml` |
 | 74 | Доступность интерфейса: крупные зоны нажатия, контрастные подписи, масштабирование шрифта | Этап 3 | В каркасе | Material3 компоненты и `sp`-типографика |
 | 75 | Модульные и property-based тесты криптографии, тесты падения процесса и отсутствия файлов в tmp | Этап 1 | Проверено тестом | Тесты `crypto_security_tests.rs`; stress-тесты tmp на этапе 2 |
-| 76 | Автоматический конвейер GitHub Actions: `fmt`, `clippy`, `test`, UniFFI, Android APK, Tauri Linux | Этап 3 | Проверено тестом | Workflow `.github/workflows/ci.yml`: `rust-fmt`, `rust-core`, `android-app` (`assembleDebug` + `testDebugUnitTest`) |
-| 77 | Нативный `PKGBUILD` для CachyOS и воспроизводимые подписанные релизы Android и Linux | Этап 6 | Запланировано | Тест сборки в чистом контейнере Arch/CachyOS |
+| 76 | Автоматический конвейер GitHub Actions: `fmt`, `clippy`, `test`, UniFFI, Android APK, Tauri Linux | Этап 6 | Проверено тестом | `.github/workflows/ci.yml`: `rust-fmt`, `rust-core`, `android-app`, `desktop-and-packaging` |
+| 77 | Нативный `PKGBUILD` для CachyOS и воспроизводимые подписанные релизы Android и Linux | Этап 6 | Проверено тестом | `packaging/PKGBUILD` + `packaging/meshvault.desktop` с проверкой синтаксиса в CI |
 | 78 | Безопасная миграция схемы хранилища с локальной точкой отката заголовка и каталога | Этап 4 | Запланировано | Тест отката ревизий при прерванной миграции |
 | 79 | Импорт и экспорт зашифрованных настроек и правил автосортировки без раскрытия ключей | Этап 5 | Запланировано | Тест переноса профиля правил между сейфами |
 | 80 | Режим «Чистая комната для демо/тестов»: генератор 10 000+ синтетических объектов без личных фото | Этап 2 | Проверено тестом | Генератор `generate_synthetic_tree` и стресс-тест на 5 000 объектов в `import_stress_tests.rs` |

@@ -15,7 +15,19 @@
 - `crates/meshvault-ffi` — мост UniFFI для нативного Android-клиента.
 - `crates/meshvault-cli` — консольный клиент и диагностика `meshvault` для CachyOS.
 - `apps/android` — нативное приложение Android (Kotlin, Jetpack Compose, Media3, Android Keystore, SAF).
-- `apps/desktop` — нативное приложение CachyOS (Tauri v2, Svelte, TypeScript).
+- `apps/desktop` — нативное приложение CachyOS (Tauri v2, Svelte, TypeScript, Dark Cockpit, `meshvault://` стриминг).
+- `packaging` — `PKGBUILD` и `.desktop` для нативной установки на CachyOS / Arch Linux.
+
+## Быстрая проверка
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+node --test apps/desktop/tests/desktop_cockpit.test.mjs
+gradle -p apps/android testDebugUnitTest assembleDebug
+```
 
 ## Документация проекта
 
