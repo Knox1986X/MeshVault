@@ -126,7 +126,8 @@ impl VaultHeader {
         for slot in &self.slots {
             if slot.slot_type == SlotType::PassphraseArgon2id {
                 let kek = derive_kek_from_passphrase(passphrase, &slot.salt, self.argon2_params)?;
-                if let Ok(mvk) = unwrap_mvk_from_slot(self.vault_id, self.format_version, slot, &kek)
+                if let Ok(mvk) =
+                    unwrap_mvk_from_slot(self.vault_id, self.format_version, slot, &kek)
                 {
                     return Ok(mvk);
                 }
@@ -143,7 +144,8 @@ impl VaultHeader {
         for slot in &self.slots {
             if slot.slot_type == SlotType::RecoveryKit24 {
                 let kek = kit.derive_kek(&slot.salt);
-                if let Ok(mvk) = unwrap_mvk_from_slot(self.vault_id, self.format_version, slot, &kek)
+                if let Ok(mvk) =
+                    unwrap_mvk_from_slot(self.vault_id, self.format_version, slot, &kek)
                 {
                     return Ok(mvk);
                 }

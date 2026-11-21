@@ -5,9 +5,7 @@ use std::path::{Path, PathBuf};
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
-use meshvault_crypto::{
-    CryptoError, MasterVaultKey, VaultHeader, WRAPPED_FEK_LEN, XNONCE_LEN,
-};
+use meshvault_crypto::{CryptoError, MasterVaultKey, VaultHeader, WRAPPED_FEK_LEN, XNONCE_LEN};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -383,9 +381,7 @@ mod tests {
 
         let sealed = catalog.seal(&mvk).expect("seal catalog");
         // Verify zero plaintext leakage of folder names in ciphertext.
-        assert!(!sealed
-            .windows(secret_folder_name.len())
-            .any(|w| w == secret_folder_name.as_bytes()));
+        assert!(!sealed.windows(secret_folder_name.len()).any(|w| w == secret_folder_name.as_bytes()));
         assert!(!sealed.windows(10).any(|w| w == b"Visa_Scans"));
 
         let reopened = VaultCatalog::open(&mvk, &sealed).expect("open catalog");
