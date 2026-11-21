@@ -284,7 +284,7 @@ impl MeshVaultSession {
                 &mvk,
                 header.vault_id,
                 AuditLogEntry {
-                    timestamp_unix_ms: catalog.created_at_unix_ms,
+                    timestamp_unix_ms: header.created_at_unix_ms,
                     kind: AuditEventKind::UnlockSuccess,
                     detail: "Unlocked full vault with passphrase".to_string(),
                 },
