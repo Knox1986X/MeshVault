@@ -84,7 +84,10 @@ impl DesktopVaultBridge {
         let locked_mvk = LockedSecretBox::new(*mvk.expose());
 
         let vault_id = header.vault_id;
-        let mut guard = self.inner.write().map_err(|_| "lock poisoned".to_string())?;
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| "lock poisoned".to_string())?;
         *guard = Some(UnlockedDesktopSession {
             layout,
             locked_mvk,
