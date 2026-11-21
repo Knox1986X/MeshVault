@@ -21,14 +21,29 @@ fn cli_full_lifecycle_init_import_search_scrub_export_backup_and_sync() {
 
     // 1. init --fast-test --json
     let out_init = Command::new(bin)
-        .args(["init", vault_dir.to_str().unwrap(), "--passphrase", pass, "--fast-test", "--json"])
+        .args([
+            "init",
+            vault_dir.to_str().unwrap(),
+            "--passphrase",
+            pass,
+            "--fast-test",
+            "--json",
+        ])
         .output()
         .expect("run init");
-    assert!(out_init.status.success(), "{}", String::from_utf8_lossy(&out_init.stderr));
+    assert!(
+        out_init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out_init.stderr)
+    );
     let init_json: serde_json::Value = serde_json::from_slice(&out_init.stdout).expect("init json");
     assert_eq!(init_json["status"], "initialized");
     assert_eq!(
-        init_json["recovery_words"].as_str().unwrap().split_whitespace().count(),
+        init_json["recovery_words"]
+            .as_str()
+            .unwrap()
+            .split_whitespace()
+            .count(),
         24
     );
     assert!(vault_dir.join(".nomedia").exists());
@@ -45,7 +60,11 @@ fn cli_full_lifecycle_init_import_search_scrub_export_backup_and_sync() {
         ])
         .output()
         .expect("run import");
-    assert!(out_import.status.success(), "{}", String::from_utf8_lossy(&out_import.stderr));
+    assert!(
+        out_import.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out_import.stderr)
+    );
     let import_json: serde_json::Value =
         serde_json::from_slice(&out_import.stdout).expect("import json");
     assert_eq!(import_json["imported_files"], 1);
@@ -66,13 +85,25 @@ fn cli_full_lifecycle_init_import_search_scrub_export_backup_and_sync() {
     assert!(out_doctor.status.success());
 
     let out_tree = Command::new(bin)
-        .args(["tree", vault_dir.to_str().unwrap(), "--passphrase", pass, "--json"])
+        .args([
+            "tree",
+            vault_dir.to_str().unwrap(),
+            "--passphrase",
+            pass,
+            "--json",
+        ])
         .output()
         .expect("tree");
     assert!(out_tree.status.success());
 
     let out_search = Command::new(bin)
-        .args(["search", vault_dir.to_str().unwrap(), "notes", "--passphrase", pass])
+        .args([
+            "search",
+            vault_dir.to_str().unwrap(),
+            "notes",
+            "--passphrase",
+            pass,
+        ])
         .output()
         .expect("search");
     assert!(out_search.status.success());
@@ -101,7 +132,11 @@ fn cli_full_lifecycle_init_import_search_scrub_export_backup_and_sync() {
         ])
         .output()
         .expect("export");
-    assert!(out_export.status.success(), "{}", String::from_utf8_lossy(&out_export.stderr));
+    assert!(
+        out_export.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out_export.stderr)
+    );
     assert_eq!(fs::read(&exported_file).unwrap(), secret_text);
 
     // 6. backup & sync-local

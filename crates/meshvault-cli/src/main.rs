@@ -159,7 +159,7 @@ fn run_cli() -> Result<(), String> {
             let params = if flags.fast_test {
                 Argon2Params::fast_test()
             } else {
-                Argon2Params::desktop_default()
+                Argon2Params::production_default()
             };
             let now = now_unix_ms();
             let secret = SecretString::from(pass);
