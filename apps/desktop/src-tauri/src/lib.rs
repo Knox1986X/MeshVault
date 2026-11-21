@@ -105,7 +105,9 @@ impl DesktopVaultBridge {
 
     pub fn list_media(&self) -> Result<Vec<DesktopMediaItem>, String> {
         let guard = self.inner.read().map_err(|_| "lock poisoned".to_string())?;
-        let sess = guard.as_ref().ok_or_else(|| "vault is locked".to_string())?;
+        let sess = guard
+            .as_ref()
+            .ok_or_else(|| "vault is locked".to_string())?;
         Ok(sess
             .catalog
             .timeline_media()
@@ -125,8 +127,13 @@ impl DesktopVaultBridge {
         paths: &[PathBuf],
         now_unix_ms: u64,
     ) -> Result<usize, String> {
-        let mut guard = self.inner.write().map_err(|_| "lock poisoned".to_string())?;
-        let sess = guard.as_mut().ok_or_else(|| "vault is locked".to_string())?;
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| "lock poisoned".to_string())?;
+        let sess = guard
+            .as_mut()
+            .ok_or_else(|| "vault is locked".to_string())?;
         let mvk = MasterVaultKey::from_bytes(*sess.locked_mvk.expose());
         let root_id = sess.catalog.root_folder_id;
         let mut imported = 0usize;
@@ -177,7 +184,9 @@ impl DesktopVaultBridge {
 
     pub fn doctor_report(&self) -> Result<VaultDoctorReport, String> {
         let guard = self.inner.read().map_err(|_| "lock poisoned".to_string())?;
-        let sess = guard.as_ref().ok_or_else(|| "vault is locked".to_string())?;
+        let sess = guard
+            .as_ref()
+            .ok_or_else(|| "vault is locked".to_string())?;
         Ok(sess.layout.doctor_report(Some(&sess.catalog)))
     }
 
@@ -188,7 +197,9 @@ impl DesktopVaultBridge {
         range_header: Option<&str>,
     ) -> Result<StreamResponse, String> {
         let guard = self.inner.read().map_err(|_| "lock poisoned".to_string())?;
-        let sess = guard.as_ref().ok_or_else(|| "vault is locked".to_string())?;
+        let sess = guard
+            .as_ref()
+            .ok_or_else(|| "vault is locked".to_string())?;
         let entry: &MediaEntry = sess
             .catalog
             .media
@@ -233,7 +244,9 @@ impl DesktopVaultBridge {
         }
 
         let mut full = Vec::with_capacity(total_size);
-        reader.decrypt_all_to(&fek, &mut full).map_err(|e| e.to_string())?;
+        reader
+            .decrypt_all_to(&fek, &mut full)
+            .map_err(|e| e.to_string())?;
         Ok(StreamResponse {
             status: 200,
             mime_type: entry.mime_type.clone(),
@@ -341,7 +354,9 @@ mod tests {
         let items = bridge.list_media().unwrap();
         assert_eq!(items.len(), 1);
 
-        let range_resp = bridge.stream_media(items[0].id, Some("bytes=10-15")).unwrap();
+        let range_resp = bridge
+            .stream_media(items[0].id, Some("bytes=10-15"))
+            .unwrap();
         assert_eq!(range_resp.status, 206);
         assert_eq!(range_resp.body, b"ABCDEF");
 
