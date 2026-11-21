@@ -373,7 +373,11 @@ mod tests {
         let mut catalog = VaultCatalog::new(vault_id, 1_700_000_000_000);
         let secret_folder_name = "Passports_2026_Confidential";
         let folder_id = catalog
-            .create_folder(catalog.root_folder_id, secret_folder_name, 1_700_000_000_100)
+            .create_folder(
+                catalog.root_folder_id,
+                secret_folder_name,
+                1_700_000_000_100,
+            )
             .expect("create folder");
         let nested_id = catalog
             .create_folder(folder_id, "Visa_Scans", 1_700_000_000_200)
@@ -381,7 +385,9 @@ mod tests {
 
         let sealed = catalog.seal(&mvk).expect("seal catalog");
         // Verify zero plaintext leakage of folder names in ciphertext.
-        assert!(!sealed.windows(secret_folder_name.len()).any(|w| w == secret_folder_name.as_bytes()));
+        assert!(!sealed
+            .windows(secret_folder_name.len())
+            .any(|w| w == secret_folder_name.as_bytes()));
         assert!(!sealed.windows(10).any(|w| w == b"Visa_Scans"));
 
         let reopened = VaultCatalog::open(&mvk, &sealed).expect("open catalog");

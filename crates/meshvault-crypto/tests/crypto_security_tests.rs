@@ -239,9 +239,13 @@ fn header_argon2id_mvk_wrap_rotation_and_fek_isolation() {
     let pass2 = SecretString::from("rotated-strong-passphrase-99".to_string());
     let wrong_pass = SecretString::from("wrong-passphrase".to_string());
 
-    let (mut header, mvk) =
-        VaultHeader::create_with_passphrase(&pass1, Argon2Params::fast_test(), 1_700_000_000_000, 0)
-            .expect("create vault header");
+    let (mut header, mvk) = VaultHeader::create_with_passphrase(
+        &pass1,
+        Argon2Params::fast_test(),
+        1_700_000_000_000,
+        0,
+    )
+    .expect("create vault header");
 
     // Wrap a file FEK using the MVK.
     let file_id = Uuid::new_v4();
