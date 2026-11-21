@@ -8,7 +8,9 @@ use meshvault_crypto::{
     disable_core_dumps, unwrap_fek, Argon2Params, ChunkedBlobReader, MasterVaultKey, RecoveryKit,
     SecretString, VaultHeader, DEFAULT_CHUNK_SIZE, HEADER_FORMAT_VERSION, WRAPPED_FEK_LEN,
 };
-use meshvault_import::{strip_metadata_for_clean_export, DedupPolicy, ImportOptions, ImportPipeline};
+use meshvault_import::{
+    strip_metadata_for_clean_export, DedupPolicy, ImportOptions, ImportPipeline,
+};
 use meshvault_storage::{atomic_write_file, FolderNode, VaultCatalog, VaultLayout};
 use meshvault_sync::{
     export_verified_backup, DeviceNetworkState, LocalDirectoryRemote, SyncDownloadMode, SyncEngine,
@@ -105,6 +107,14 @@ fn require_passphrase(flags: &CliFlags) -> Result<String, String> {
         .ok_or_else(|| "missing --passphrase <secret> (or MESHVAULT_PASSPHRASE env)".to_string())
 }
 
+fn require_vault_dir(flags: &CliFlags, usage: &str) -> Result<PathBuf, String> {
+    flags
+        .positional
+        .first()
+        .map(PathBuf::from)
+        .ok_or_else(|| usage.to_string())
+}
+
 fn ensure_indexer_exclusions(vault_dir: &Path) -> Result<(), String> {
     atomic_write_file(&vault_dir.join(".nomedia"), b"")
         .map_err(|e| format!("failed to write .nomedia: {e}"))?;
@@ -143,12 +153,8 @@ fn run_cli() -> Result<(), String> {
             println!("{payload}");
         }
         "init" => {
-            let vault_dir = PathBuf::from(
-                flags
-                    .positional
-                    .first()
-                    .ok_or_else(|| "usage: meshvault init <vault_dir> --passphrase <p>".to_string())?,
-            );
+            let vault_dir =
+                require_vault_dir(&flags, "usage: meshvault init <vault_dir> --passphrase <p>")?;
             let pass = require_passphrase(&flags)?;
             let params = if flags.fast_test {
                 Argon2Params::fast_test()
@@ -191,12 +197,10 @@ fn run_cli() -> Result<(), String> {
             }
         }
         "status" => {
-            let vault_dir = PathBuf::from(
-                flags
-                    .positional
-                    .first()
-                    .ok_or_else(|| "usage: meshvault status <vault_dir> --passphrase <p>".to_string())?,
-            );
+            let vault_dir = require_vault_dir(
+                &flags,
+                "usage: meshvault status <vault_dir> --passphrase <p>",
+            )?;
             let pass = require_passphrase(&flags)?;
             let (_layout, header, _mvk, catalog) = unlock_vault(&vault_dir, &pass)?;
             let metrics = catalog.compute_metrics();
@@ -206,30 +210,29 @@ fn run_cli() -> Result<(), String> {
                     "vault_id": header.vault_id,
                     "header_revision": header.revision,
                     "catalog_revision": catalog.catalog_revision,
-                    "total_folders": metrics.total_folders,
+                    "folder_count": metrics.folder_count,
                     "total_media": metrics.total_media,
-                    "trashed_media": metrics.trashed_media,
-                    "total_plaintext_bytes": metrics.total_plaintext_bytes,
-                    "total_encrypted_bytes": metrics.total_encrypted_bytes,
+                    "trashed_count": metrics.trashed_count,
+                    "total_bytes": metrics.total_bytes,
+                    "thumb_pack_bytes": metrics.thumb_pack_bytes,
                 })
             );
         }
         "doctor" => {
-            let vault_dir = PathBuf::from(
-                flags
-                    .positional
-                    .first()
-                    .ok_or_else(|| "usage: meshvault doctor <vault_dir> --passphrase <p>".to_string())?,
-            );
+            let vault_dir = require_vault_dir(
+                &flags,
+                "usage: meshvault doctor <vault_dir> --passphrase <p>",
+            )?;
             let pass = require_passphrase(&flags)?;
             let (layout, _header, _mvk, catalog) = unlock_vault(&vault_dir, &pass)?;
             let report = layout.doctor_report(Some(&catalog));
-            println!("{}", serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?);
+            let json = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+            println!("{json}");
         }
         "import" => {
             if flags.positional.len() < 2 {
                 return Err(
-                    "usage: meshvault import <vault_dir> <source_path> --passphrase <p> [--folder <name>]"
+                    "usage: meshvault import <vault_dir> <source_path> --passphrase <p>"
                         .to_string(),
                 );
             }
@@ -255,7 +258,8 @@ fn run_cli() -> Result<(), String> {
                 layout
                     .save_catalog(&mvk, &catalog)
                     .map_err(|e| format!("save catalog failed: {e}"))?;
-                println!("{}", serde_json::to_string(&report).map_err(|e| e.to_string())?);
+                let json = serde_json::to_string(&report).map_err(|e| e.to_string())?;
+                println!("{json}");
             } else {
                 let raw = fs::read(&source_path)
                     .map_err(|e| format!("failed to read {}: {e}", source_path.display()))?;
@@ -288,24 +292,21 @@ fn run_cli() -> Result<(), String> {
                     "{}",
                     serde_json::json!({
                         "media_id": res.media_id,
-                        "deduplicated": res.deduplicated,
+                        "deduplicated_skip": res.deduplicated_skip,
                         "file_name": file_name,
                     })
                 );
             }
         }
         "tree" => {
-            let vault_dir = PathBuf::from(
-                flags
-                    .positional
-                    .first()
-                    .ok_or_else(|| "usage: meshvault tree <vault_dir> --passphrase <p>".to_string())?,
-            );
+            let vault_dir =
+                require_vault_dir(&flags, "usage: meshvault tree <vault_dir> --passphrase <p>")?;
             let pass = require_passphrase(&flags)?;
             let (_layout, _header, _mvk, catalog) = unlock_vault(&vault_dir, &pass)?;
             if flags.json {
                 let folders: Vec<&FolderNode> = catalog.folders.values().collect();
-                println!("{}", serde_json::to_string(&folders).map_err(|e| e.to_string())?);
+                let json = serde_json::to_string(&folders).map_err(|e| e.to_string())?;
+                println!("{json}");
             } else {
                 for folder in catalog.folders.values() {
                     println!("{}  {}", folder.id, folder.name);
@@ -313,12 +314,8 @@ fn run_cli() -> Result<(), String> {
             }
         }
         "ls" => {
-            let vault_dir = PathBuf::from(
-                flags
-                    .positional
-                    .first()
-                    .ok_or_else(|| "usage: meshvault ls <vault_dir> --passphrase <p>".to_string())?,
-            );
+            let vault_dir =
+                require_vault_dir(&flags, "usage: meshvault ls <vault_dir> --passphrase <p>")?;
             let pass = require_passphrase(&flags)?;
             let (_layout, _header, _mvk, catalog) = unlock_vault(&vault_dir, &pass)?;
             let folder_id = match &flags.folder {
@@ -340,34 +337,39 @@ fn run_cli() -> Result<(), String> {
                     println!("[DIR]  {}  {}", f.id, f.name);
                 }
                 for m in media {
-                    println!("[FILE] {}  {}  ({} B)", m.id, m.original_name, m.plaintext_size);
+                    println!(
+                        "[FILE] {}  {}  ({} B)",
+                        m.id, m.original_name, m.plaintext_size
+                    );
                 }
             }
         }
         "search" => {
             if flags.positional.len() < 2 {
-                return Err("usage: meshvault search <vault_dir> <query> --passphrase <p>".to_string());
+                return Err(
+                    "usage: meshvault search <vault_dir> <query> --passphrase <p>".to_string(),
+                );
             }
             let vault_dir = PathBuf::from(&flags.positional[0]);
             let query = &flags.positional[1];
             let pass = require_passphrase(&flags)?;
             let (_layout, _header, _mvk, catalog) = unlock_vault(&vault_dir, &pass)?;
             let matches = catalog.search_media(query);
-            println!("{}", serde_json::to_string(&matches).map_err(|e| e.to_string())?);
+            let json = serde_json::to_string(&matches).map_err(|e| e.to_string())?;
+            println!("{json}");
         }
         "scrub" => {
-            let vault_dir = PathBuf::from(
-                flags
-                    .positional
-                    .first()
-                    .ok_or_else(|| "usage: meshvault scrub <vault_dir> --passphrase <p>".to_string())?,
-            );
+            let vault_dir = require_vault_dir(
+                &flags,
+                "usage: meshvault scrub <vault_dir> --passphrase <p>",
+            )?;
             let pass = require_passphrase(&flags)?;
             let (layout, _header, mvk, catalog) = unlock_vault(&vault_dir, &pass)?;
             let scrub = layout
                 .scrub_vault(&mvk, &catalog)
                 .map_err(|e| format!("scrub failed: {e}"))?;
-            println!("{}", serde_json::to_string(&scrub).map_err(|e| e.to_string())?);
+            let json = serde_json::to_string(&scrub).map_err(|e| e.to_string())?;
+            println!("{json}");
             if !scrub.corrupted_blobs.is_empty() || !scrub.missing_blobs.is_empty() {
                 return Err("integrity errors detected during vault scrub".to_string());
             }
@@ -375,7 +377,7 @@ fn run_cli() -> Result<(), String> {
         "export" => {
             if flags.positional.len() < 3 {
                 return Err(
-                    "usage: meshvault export <vault_dir> <media_id> <out_path> --passphrase <p> [--clean]"
+                    "usage: meshvault export <vault_dir> <media_id> <out_path> --passphrase <p>"
                         .to_string(),
                 );
             }
@@ -406,8 +408,7 @@ fn run_cli() -> Result<(), String> {
                 .map_err(|e| format!("decrypt failed: {e}"))?;
 
             let final_bytes = if flags.clean {
-                strip_metadata_for_clean_export(&plain, &entry.mime_type)
-                    .map_err(|e| format!("clean export strip failed: {e}"))?
+                strip_metadata_for_clean_export(&entry.mime_type, &plain)
             } else {
                 plain
             };

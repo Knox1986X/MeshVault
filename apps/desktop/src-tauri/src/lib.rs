@@ -164,7 +164,7 @@ impl DesktopVaultBridge {
                     now_unix_ms,
                 )
                 .map_err(|e| format!("file import failed: {e}"))?;
-                if !res.deduplicated {
+                if !res.deduplicated_skip {
                     imported += 1;
                 }
             }
@@ -244,7 +244,7 @@ impl DesktopVaultBridge {
 
     pub fn clean_export_bytes(&self, media_id: Uuid) -> Result<Vec<u8>, String> {
         let resp = self.stream_media(media_id, None)?;
-        strip_metadata_for_clean_export(&resp.body, &resp.mime_type).map_err(|e| e.to_string())
+        Ok(strip_metadata_for_clean_export(&resp.mime_type, &resp.body))
     }
 }
 

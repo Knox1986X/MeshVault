@@ -88,9 +88,21 @@ jobs:
 
       - name: Check formatting and tests for desktop core
         run: |
-          cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
-          cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
-          cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+          if ! cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check > desktop_fmt.log 2>&1; then
+            cat desktop_fmt.log
+            python3 -c "import pathlib; txt = pathlib.Path(\"desktop_fmt.log\").read_text()[-3000:].replace(\"%\",\"%25\").replace(\"\\r\",\"%0D\").replace(\"\\n\",\"%0A\"); print(f\"::error::{txt}\")"
+            exit 1
+          fi
+          if ! cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings > desktop_clippy.log 2>&1; then
+            cat desktop_clippy.log
+            python3 -c "import pathlib; txt = pathlib.Path(\"desktop_clippy.log\").read_text()[-3000:].replace(\"%\",\"%25\").replace(\"\\r\",\"%0D\").replace(\"\\n\",\"%0A\"); print(f\"::error::{txt}\")"
+            exit 1
+          fi
+          if ! cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml > desktop_test.log 2>&1; then
+            cat desktop_test.log
+            python3 -c "import pathlib; txt = pathlib.Path(\"desktop_test.log\").read_text()[-3000:].replace(\"%\",\"%25\").replace(\"\\r\",\"%0D\").replace(\"\\n\",\"%0A\"); print(f\"::error::{txt}\")"
+            exit 1
+          fi
 
       - name: Run Desktop Dark Cockpit hotkey and blur-guard tests
         run: node --test apps/desktop/tests/desktop_cockpit.test.mjs
