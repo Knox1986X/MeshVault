@@ -1,7 +1,7 @@
 # Текущее состояние проекта MeshVault (STATE)
 
 - Дата контрольной точки: 2026-11-21
-- Активный этап: Этап 3 — Нативное Android-приложение (база и Dark Cockpit UI собраны, проверены в CI; готов к переходу к Этапу 4)
+- Активный этап: Этап 4 — Полный функционал Android и углублённая безопасность (выполнен, проверен в CI; готов к переходу к Этапу 5)
 - Репозиторий GitHub: `https://github.com/Knox1986X/MeshVault`
 - Рабочая ветка: `arena/57a12259-meshvault` (фиксирована окружением сессии)
 - Pull Request: `https://github.com/Knox1986X/MeshVault/pull/1` (открыт, не слит)
@@ -11,27 +11,29 @@
 
 - Команды shell (bash): проверено, работает; локально в sandbox отсутствуют `rustc`, `cargo` и Android SDK.
 - GitHub (`gh` и `git push`): проверено, авторизован как `Knox1986X`.
-- Конвейер GitHub Actions CI (`MeshVault CI`, прогон `44896839217` на коммите `e0cb8c3`):
+- Конвейер GitHub Actions CI (`MeshVault CI`, прогон `44898985353` на коммите `c130bd2`):
   - `Rust Format Check` (`cargo fmt --all -- --check`) — пройдено (`success`).
-  - `Rust Clippy and Tests` (`cargo clippy`, `cargo test --workspace`, `cargo build --bin meshvault`) — пройдено (`success`).
+  - `Rust Clippy and Tests` (`cargo clippy`, `cargo test --workspace`, `cargo build --bin meshvault`, `cargo build -p meshvault-ffi`) — пройдено (`success`).
   - `Android Build and Unit Tests` (`gradle -p apps/android testDebugUnitTest assembleDebug`) — пройдено (`success`):
-    * Debug APK `io.github.knox1986x.meshvault` скомпилирован и собран полностью;
-    * JVM unit-тесты `RussianPluralsTest` и `VaultSessionStateTest` пройдены успешно.
+    * Debug APK скомпилирован и собран с новым сервисом `LockTileService`, `WorkManager` воркером и датчиками;
+    * JVM unit-тесты `RussianPluralsTest`, `VaultSessionStateTest` и `SecurityGuardsTest` пройдены успешно.
 - Dropbox: отключён в настройках коннекторов текущей сессии.
 
-## Сделано на этапе 3
+## Сделано на этапе 4
 
-1. Расширены Rust-крейты для полноценной работы Android-клиента:
-   - `meshvault-storage`: `VaultMetrics`, `breadcrumbs`, `timeline_media`, `compute_metrics`;
-   - `meshvault-import`: потоковый `ImportPipeline::import_bytes_item` для импорта элементов из Android SAF `InputStream` без записи открытых файлов в `tmp`;
-   - `meshvault-ffi`: добавлены слоты `HardwareKeystore`, `vault_metrics`, `list_all_media_timeline`, `get_folder_breadcrumbs`, `set_folder_pinned`, `set_folder_blur_shield`, `toggle_favorite` и расширенный тест `ffi_session_tests.rs`.
-2. Создан нативный Android-проект `apps/android` (`compileSdk 35`, `minSdk 26`, Kotlin 2.0.21, Jetpack Compose + Material3, Biometric 1.1.0, Media3 1.4.1, WorkManager 2.9.1):
-   - `AndroidManifest.xml`: `allowBackup="false"`, приём «Поделиться» (`ACTION_SEND` / `ACTION_SEND_MULTIPLE`), `activity-alias` для маскировки ярлыка, отсутствие глобальных разрешений вроде `READ_MEDIA_IMAGES`;
-   - безопасность и медиа: `KeystoreVaultWrapper.kt` (Android Keystore + `BiometricPrompt`), `SafTreeScanner.kt` (обход дерева SAF с защитой от циклов и расчётом веток), `EncryptedMediaDataSource.kt` (потоковое воспроизведение Media3 из ОЗУ без временных файлов), `VaultBackend.kt`, `RussianPlurals.kt`;
-   - визуальная система **Dark Cockpit**: `CockpitTheme.kt` (`#0b0b14`, `#12121e`, `#1e1e30`, `#7c3aed`), `CockpitComponents.kt` (`StatusPill`, `MetricCard`, `StorageDonut`, `ImportTelemetryChart`, `FolderTreeCard`);
-   - экраны: `UnlockScreen`, `OverviewScreen`, `GalleryScreen`, `FoldersScreen`, `SearchScreen`, `SecurityScreen`, `ViewerScreen`, `ImportPreviewDialog`, `MainActivity` (принудительный `FLAG_SECURE`, автолок в фоне, адаптивная нижняя панель и сайдбар 260dp).
+1. Расширена криптография и хранилище:
+   - `meshvault-crypto`: добавлены `VaultHeader::add_decoy_slot` и `unlock_with_decoy_passphrase` с независимым `decoy_mvk`, гарантирующим криптографическую изоляцию Ложного сейфа;
+   - `meshvault-storage`: добавлены 30-дневная зашифрованная Корзина (`move_to_trash`, `restore_from_trash`, `shred_media`, `purge_expired_trash`), операции с деревом (`move_media`, `rename_folder`, `update_media_tags_and_note`), офлайн-поиск `search_media`, группировка визуальных дубликатов `find_similar_by_dhash`, шифрованный журнал аудита `catalog/audit.mva` (`derive_audit_log_key`), счётчик перебора `BruteForceState` и диагностика `VaultLayout::doctor_report`.
+2. Расширены конвейер и UniFFI:
+   - `meshvault-import`: добавлена функция `strip_metadata_for_clean_export` в ОЗУ (удаление APP1..APP15 / COM с EXIF/GPS/XMP из JPEG и перекодирование чистых пикселей);
+   - `meshvault-ffi`: экспортированы Decoy Vault, Safe Presentation, Корзина + криптоуничтожение, Чистый экспорт, dHash-поиск, журнал аудита и `doctor_report`.
+3. Добавлена углублённая защита в Android (`apps/android`):
+   - `SecurityGuards.kt`: `ClipboardGuard` (очистка буфера через 30с + `EXTRA_IS_SENSITIVE`), `FlipToLockDetector` (акселерометр), `AppIconSwitcher` (`AliasNotesLauncher`);
+   - `LockTileService.kt`: плитка Quick Settings для экстренной блокировки;
+   - `VaultMaintenanceWorker.kt`: периодический `WorkManager` для фонового `Vault Scrub` и очистки 30-дневной Корзины;
+   - обновлены `SecurityScreen`, `ViewerScreen` (подтверждение паролем выхода из Safe Presentation, Чистый экспорт, Корзина), `MainActivity` и `SecurityGuardsTest`.
 
 ## Следующий шаг
 
-1. Приступить к Этапу 4 — Полный функционал Android (углублённая безопасность, Decoy Vault, 30-дневная Корзина с криптоуничтожением, Blur Shield с повторным подтверждением, чистый экспорт без EXIF/GPS, WorkManager фоновые задачи Scrub/Backup, сборка нативных `.so` через `cargo-ndk` + генерация Kotlin UniFFI биндингов в CI).
+1. Приступить к Этапу 5 — E2EE-синхронизация (`crates/meshvault-sync`) через `/MeshVault/` в Dropbox (OAuth2 PKCE + адаптер App Folder с мок-тестами), прямой LAN Wi-Fi протокол с QR-проверкой, конфликт-менеджер ревизий, выравнивание размеров (`FLAG_SIZE_PADDING`) и резервная копия сейфа.
 2. При включении Dropbox синхронизировать `docs/STATE.md` в `/MeshVault/STATE.md`.
