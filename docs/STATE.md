@@ -1,7 +1,7 @@
 # Текущее состояние проекта MeshVault (STATE)
 
 - Дата контрольной точки: 2026-11-21
-- Активный этап: Этап 4 — Полный функционал Android и углублённая безопасность (выполнен, проверен в CI; готов к переходу к Этапу 5)
+- Активный этап: Этап 5 — E2EE-синхронизация (выполнен, проверен в CI; готов к переходу к Этапу 6)
 - Репозиторий GitHub: `https://github.com/Knox1986X/MeshVault`
 - Рабочая ветка: `arena/57a12259-meshvault` (фиксирована окружением сессии)
 - Pull Request: `https://github.com/Knox1986X/MeshVault/pull/1` (открыт, не слит)
@@ -11,29 +11,22 @@
 
 - Команды shell (bash): проверено, работает; локально в sandbox отсутствуют `rustc`, `cargo` и Android SDK.
 - GitHub (`gh` и `git push`): проверено, авторизован как `Knox1986X`.
-- Конвейер GitHub Actions CI (`MeshVault CI`, прогон `44898985353` на коммите `c130bd2`):
-  - `Rust Format Check` (`cargo fmt --all -- --check`) — пройдено (`success`).
-  - `Rust Clippy and Tests` (`cargo clippy`, `cargo test --workspace`, `cargo build --bin meshvault`, `cargo build -p meshvault-ffi`) — пройдено (`success`).
-  - `Android Build and Unit Tests` (`gradle -p apps/android testDebugUnitTest assembleDebug`) — пройдено (`success`):
-    * Debug APK скомпилирован и собран с новым сервисом `LockTileService`, `WorkManager` воркером и датчиками;
-    * JVM unit-тесты `RussianPluralsTest`, `VaultSessionStateTest` и `SecurityGuardsTest` пройдены успешно.
+- Конвейер GitHub Actions CI (`MeshVault CI`, прогон `44900217423` на коммите `912a05f`):
+  - `Rust Format Check` (`cargo fmt --all -- --check`) — пройдено (`success`, `9s`).
+  - `Rust Clippy and Tests` (`cargo clippy`, `cargo test --workspace`, `cargo build --bin meshvault`, `cargo build -p meshvault-ffi`) — пройдено (`success`, `1m56s`).
+  - `Android Build and Unit Tests` (`gradle -p apps/android testDebugUnitTest assembleDebug`) — пройдено (`success`, `3m03s`).
 - Dropbox: отключён в настройках коннекторов текущей сессии.
 
-## Сделано на этапе 4
+## Сделано на этапе 5
 
-1. Расширена криптография и хранилище:
-   - `meshvault-crypto`: добавлены `VaultHeader::add_decoy_slot` и `unlock_with_decoy_passphrase` с независимым `decoy_mvk`, гарантирующим криптографическую изоляцию Ложного сейфа;
-   - `meshvault-storage`: добавлены 30-дневная зашифрованная Корзина (`move_to_trash`, `restore_from_trash`, `shred_media`, `purge_expired_trash`), операции с деревом (`move_media`, `rename_folder`, `update_media_tags_and_note`), офлайн-поиск `search_media`, группировка визуальных дубликатов `find_similar_by_dhash`, шифрованный журнал аудита `catalog/audit.mva` (`derive_audit_log_key`), счётчик перебора `BruteForceState` и диагностика `VaultLayout::doctor_report`.
-2. Расширены конвейер и UniFFI:
-   - `meshvault-import`: добавлена функция `strip_metadata_for_clean_export` в ОЗУ (удаление APP1..APP15 / COM с EXIF/GPS/XMP из JPEG и перекодирование чистых пикселей);
-   - `meshvault-ffi`: экспортированы Decoy Vault, Safe Presentation, Корзина + криптоуничтожение, Чистый экспорт, dHash-поиск, журнал аудита и `doctor_report`.
-3. Добавлена углублённая защита в Android (`apps/android`):
-   - `SecurityGuards.kt`: `ClipboardGuard` (очистка буфера через 30с + `EXTRA_IS_SENSITIVE`), `FlipToLockDetector` (акселерометр), `AppIconSwitcher` (`AliasNotesLauncher`);
-   - `LockTileService.kt`: плитка Quick Settings для экстренной блокировки;
-   - `VaultMaintenanceWorker.kt`: периодический `WorkManager` для фонового `Vault Scrub` и очистки 30-дневной Корзины;
-   - обновлены `SecurityScreen`, `ViewerScreen` (подтверждение паролем выхода из Safe Presentation, Чистый экспорт, Корзина), `MainActivity` и `SecurityGuardsTest`.
+1. Реализован движок E2EE-синхронизации `crates/meshvault-sync`:
+   - `transport.rs`: абстракция `RemoteSyncTransport` с жёсткой проверкой префикса `/MeshVault/` (`validate_app_folder_path`), генератор OAuth2 PKCE `S256` (`PkceAuthFlow`), потокобезопасный `InMemoryMockRemote` (с докачкой `upload_chunked_resume`) и `LocalDirectoryRemote`;
+   - `engine.rs`: `SyncEngine` с полным жизненным циклом эпох, проверкой `SyncPolicy` / `DeviceNetworkState` (`PausedMetered`), режимами `SyncDownloadMode::FullMirror` и `MetadataAndThumbsOnly` + `fetch_blob_on_demand`, аутентифицированным выравниванием размеров `MVPD` (`encode_padded_cloud_envelope` для `FLAG_SIZE_PADDING`) и неразрушающим слиянием каталогов `merge_catalogs_lww` (`ConflictResolved`);
+   - `lan.rs`: `LanPairingSession` для прямой Wi-Fi / LAN синхронизации Android ↔ CachyOS с 6-значным SAS/QR-кодом верификации, `XChaCha20-Poly1305` и защитой от replay-атак по `seq_no`;
+   - `backup.rs`: `export_verified_backup` на USB OTG / диск Btrfs/LUKS с немедленным запуском `scrub_vault` по копии;
+   - `tests/sync_e2ee_tests.rs`: сквозные тесты двусторонней E2EE-синхронизации с проверкой отсутствия открытого текста на сервере, конфликта двух устройств, Selective Sync, `PausedMetered`, LAN QR-спаривания и `export_verified_backup`.
 
 ## Следующий шаг
 
-1. Приступить к Этапу 5 — E2EE-синхронизация (`crates/meshvault-sync`) через `/MeshVault/` в Dropbox (OAuth2 PKCE + адаптер App Folder с мок-тестами), прямой LAN Wi-Fi протокол с QR-проверкой, конфликт-менеджер ревизий, выравнивание размеров (`FLAG_SIZE_PADDING`) и резервная копия сейфа.
+1. Перейти к Этапу 6 — полноценный CLI `meshvault` (`init`, `unlock`, `lock`, `status`, `doctor`, `import`, `tree`, `ls`, `scrub`, `sync`, `export`), Desktop-приложение CachyOS (Tauri v2 + Svelte + TypeScript в `apps/desktop`, тёмная тема Dark Cockpit, горячие клавиши, защита памяти `mlock`/`prctl`, интеграция с Secret Service), `packaging/PKGBUILD` для Arch/CachyOS и расширение CI.
 2. При включении Dropbox синхронизировать `docs/STATE.md` в `/MeshVault/STATE.md`.
