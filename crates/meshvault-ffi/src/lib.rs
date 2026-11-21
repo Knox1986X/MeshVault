@@ -978,6 +978,69 @@ impl MeshVaultSession {
         Ok(cleaned)
     }
 
+    /// Groups compound media (Live/Motion Photos, RAW+JPEG+XMP, video+subtitles) in folders.
+    pub fn link_companion_media(&self) -> Result<u64, FfiVaultError> {
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
+        let inner = &mut *guard;
+        let mvk = inner.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        let catalog = inner.catalog.as_mut().ok_or(FfiVaultError::VaultLocked)?;
+        let linked = catalog.link_companion_media() as u64;
+        if linked > 0 {
+            save_active_catalog(inner.state, &inner.layout, mvk, catalog)?;
+        }
+        Ok(linked)
+    }
+
+    /// Updates captured timestamp metadata in the encrypted catalog without touching the blob.
+    pub fn update_media_captured_at(
+        &self,
+        media_id: String,
+        captured_at_unix_ms: Option<u64>,
+    ) -> Result<(), FfiVaultError> {
+        let uuid = parse_uuid(&media_id)?;
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
+        let inner = &mut *guard;
+        let mvk = inner.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        let catalog = inner.catalog.as_mut().ok_or(FfiVaultError::VaultLocked)?;
+        catalog.update_media_captured_at(uuid, captured_at_unix_ms)?;
+        save_active_catalog(inner.state, &inner.layout, mvk, catalog)?;
+        Ok(())
+    }
+
+    /// Returns media IDs in a folder (and optionally all subfolders) for slideshow playback.
+    pub fn collect_slideshow_media(
+        &self,
+        folder_id: String,
+        recursive: bool,
+    ) -> Result<Vec<String>, FfiVaultError> {
+        let folder_uuid = parse_uuid(&folder_id)?;
+        let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
+        let catalog = guard.catalog.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        Ok(catalog
+            .collect_subtree_media_ids(folder_uuid, recursive)
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect())
+    }
+
+    /// Exports a decrypted folder subtree back to a user-selected directory.
+    pub fn export_folder_tree(
+        &self,
+        folder_id: String,
+        dest_dir: String,
+    ) -> Result<u64, FfiVaultError> {
+        let folder_uuid = parse_uuid(&folder_id)?;
+        let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
+        let mvk = guard.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        let catalog = guard.catalog.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        Ok(guard.layout.export_folder_tree(
+            mvk,
+            catalog,
+            folder_uuid,
+            &PathBuf::from(dest_dir),
+        )?)
+    }
+
     /// Lists decrypted security audit log entries in RAM.
     pub fn list_audit_events(&self) -> Result<Vec<FfiAuditEventDto>, FfiVaultError> {
         let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;

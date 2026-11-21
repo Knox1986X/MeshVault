@@ -436,3 +436,45 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
 }
+
+/// Rectangular pixel region `(x, y, width, height)` targeted for in-RAM privacy redaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RedactionRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Masks sensitive regions (faces, IDs, signatures) purely in RAM and strips metadata.
+pub fn redact_image_regions_in_ram(
+    mime_type: &str,
+    bytes: &[u8],
+    regions: &[RedactionRect],
+) -> Option<Vec<u8>> {
+    let mut rgba = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let (img_w, img_h) = rgba.dimensions();
+    for rect in regions {
+        let x_end = rect.x.saturating_add(rect.width).min(img_w);
+        let y_end = rect.y.saturating_add(rect.height).min(img_h);
+        for py in rect.y.min(img_h)..y_end {
+            for px in rect.x.min(img_w)..x_end {
+                rgba.put_pixel(px, py, image::Rgba([18, 18, 28, 255]));
+            }
+        }
+    }
+
+    let fmt = match mime_type {
+        "image/png" => ImageFormat::Png,
+        "image/webp" => ImageFormat::WebP,
+        _ => ImageFormat::Jpeg,
+    };
+    let dynamic = if fmt == ImageFormat::Jpeg {
+        image::DynamicImage::ImageRgb8(image::DynamicImage::ImageRgba8(rgba).to_rgb8())
+    } else {
+        image::DynamicImage::ImageRgba8(rgba)
+    };
+    let mut out = Vec::new();
+    dynamic.write_to(&mut Cursor::new(&mut out), fmt).ok()?;
+    Some(out)
+}

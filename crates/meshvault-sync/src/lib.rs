@@ -2,6 +2,7 @@ pub mod backup;
 pub mod engine;
 pub mod error;
 pub mod lan;
+pub mod profile;
 pub mod transport;
 
 pub use backup::{export_verified_backup, BackupReport};
@@ -12,6 +13,9 @@ pub use engine::{
 };
 pub use error::SyncError;
 pub use lan::{LanPairingQrPayload, LanPairingSession, LanSyncFrame};
+pub use profile::{
+    open_vault_profile, seal_vault_profile, AutoSortRule, EncryptedVaultProfile,
+};
 use serde::{Deserialize, Serialize};
 pub use transport::{
     validate_app_folder_path, InMemoryMockRemote, LocalDirectoryRemote, PkceAuthFlow,

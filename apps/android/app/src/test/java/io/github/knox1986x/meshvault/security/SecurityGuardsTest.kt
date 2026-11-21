@@ -57,4 +57,41 @@ class SecurityGuardsTest {
         assertEquals(VaultSecurityState.UNLOCKED_DECOY, backend.securityState)
         assertEquals(0L, backend.vaultMetrics().totalMedia)
     }
+
+    @Test
+    fun thermalBatteryGuardAndInboxWatcherBehaveCorrectly() {
+        assertTrue(
+            ThermalBatteryGuard.shouldPauseHeavyWork(
+                ThermalBatteryGuard.PowerThermalStatus(
+                    batteryPercent = 85,
+                    isCharging = true,
+                    temperatureTenthsCelsius = 435,
+                ),
+            ),
+        )
+        assertTrue(
+            ThermalBatteryGuard.shouldPauseHeavyWork(
+                ThermalBatteryGuard.PowerThermalStatus(
+                    batteryPercent = 12,
+                    isCharging = false,
+                    temperatureTenthsCelsius = 320,
+                ),
+            ),
+        )
+        assertFalse(
+            ThermalBatteryGuard.shouldPauseHeavyWork(
+                ThermalBatteryGuard.PowerThermalStatus(
+                    batteryPercent = 50,
+                    isCharging = false,
+                    temperatureTenthsCelsius = 360,
+                ),
+            ),
+        )
+
+        val candidates = InboxFolderWatcher.findNewCandidateIds(
+            currentDocumentIds = listOf("doc-1", "doc-2", "doc-3"),
+            alreadyProcessedIds = setOf("doc-1"),
+        )
+        assertEquals(listOf("doc-2", "doc-3"), candidates)
+    }
 }

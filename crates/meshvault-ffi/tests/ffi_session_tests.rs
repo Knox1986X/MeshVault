@@ -177,7 +177,7 @@ fn ffi_stage4_decoy_trash_clean_export_and_doctor() {
         .expect("clean export");
     assert!(meshvault_import::parse_jpeg_exif(&cleaned).camera.is_none());
 
-    // Tagging, search, Safe Presentation, and Doctor report.
+    // Tagging, date edit, slideshow traversal, Safe Presentation, and Doctor report.
     session
         .update_media_tags_and_note(
             imported.media_id.clone(),
@@ -185,6 +185,16 @@ fn ffi_stage4_decoy_trash_clean_export_and_doctor() {
             Some("Border crossing scan".to_string()),
         )
         .expect("update tags");
+    session
+        .update_media_captured_at(imported.media_id.clone(), Some(1_712_000_000_000))
+        .expect("update captured_at");
+    assert_eq!(
+        session
+            .collect_slideshow_media(root, true)
+            .expect("slideshow")
+            .len(),
+        1
+    );
     assert_eq!(session.search_media("border".to_string()).unwrap().len(), 1);
 
     session.enter_safe_presentation().expect("enter safe");

@@ -523,6 +523,79 @@ impl VaultLayout {
 
         Ok(report)
     }
+
+    /// Creates a pre-migration rollback snapshot of `vault.header` and `catalog/tree.mvc`.
+    pub fn create_rollback_snapshot(&self) -> Result<(), StorageError> {
+        let hdr = fs::read(self.primary_header_path())?;
+        atomic_write_file(&self.root.join("vault.header.rollback"), &hdr)?;
+        let cat = fs::read(self.catalog_path())?;
+        atomic_write_file(&self.root.join("catalog/tree.mvc.rollback"), &cat)?;
+        Ok(())
+    }
+
+    /// Restores `vault.header` and `catalog/tree.mvc` from the pre-migration rollback snapshot.
+    pub fn rollback_to_snapshot(&self) -> Result<(), StorageError> {
+        let hdr = fs::read(self.root.join("vault.header.rollback"))?;
+        atomic_write_file(&self.primary_header_path(), &hdr)?;
+        atomic_write_file(&self.backup_header_path(), &hdr)?;
+        let cat = fs::read(self.root.join("catalog/tree.mvc.rollback"))?;
+        atomic_write_file(&self.catalog_path(), &cat)?;
+        Ok(())
+    }
+
+    /// Recursively decrypts and exports a vault folder subtree to `dest_dir` on disk.
+    pub fn export_folder_tree(
+        &self,
+        mvk: &MasterVaultKey,
+        catalog: &VaultCatalog,
+        folder_id: Uuid,
+        dest_dir: &Path,
+    ) -> Result<u64, StorageError> {
+        if !catalog.folders.contains_key(&folder_id) {
+            return Err(StorageError::FolderNotFound(folder_id));
+        }
+        fs::create_dir_all(dest_dir)?;
+        let (subfolders, media) = catalog.list_folder_contents(folder_id);
+        let mut exported_count = 0u64;
+
+        for entry in media {
+            let safe_name = sanitize_export_segment(&entry.original_name);
+            let wrapped: [u8; WRAPPED_FEK_LEN] = entry
+                .wrapped_fek
+                .as_slice()
+                .try_into()
+                .map_err(|_| StorageError::CorruptContainer("invalid wrapped FEK".into()))?;
+            let fek = unwrap_fek(mvk, entry.id, &wrapped)?;
+            let blob_file = fs::File::open(self.blob_path(entry.id))?;
+            let mut reader = ChunkedBlobReader::open(blob_file)?;
+            let mut plain = Zeroizing::new(Vec::with_capacity(entry.plaintext_size as usize));
+            reader.decrypt_all_to(&fek, &mut plain)?;
+            atomic_write_file(&dest_dir.join(safe_name), &plain)?;
+            exported_count += 1;
+        }
+
+        for child in subfolders {
+            let child_dir = dest_dir.join(sanitize_export_segment(&child.name));
+            exported_count += self.export_folder_tree(mvk, catalog, child.id, &child_dir)?;
+        }
+
+        Ok(exported_count)
+    }
+}
+
+fn sanitize_export_segment(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | '\0' => '_',
+            _ => c,
+        })
+        .collect();
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+        "unnamed".to_string()
+    } else {
+        cleaned
+    }
 }
 
 /// Supported media categories inside the encrypted catalog.
@@ -593,6 +666,8 @@ pub struct MediaEntry {
     pub tags: Vec<String>,
     #[serde(default)]
     pub note_markdown: Option<String>,
+    #[serde(default)]
+    pub companion_ids: Vec<Uuid>,
     pub favorite: bool,
     pub trashed_at_unix_ms: Option<u64>,
     pub captured_at_unix_ms: Option<u64>,
@@ -930,6 +1005,74 @@ impl VaultCatalog {
         item.note_markdown = note;
         self.catalog_revision = self.catalog_revision.saturating_add(1);
         Ok(())
+    }
+
+    /// Non-destructively updates the captured timestamp of a media item in the encrypted catalog.
+    pub fn update_media_captured_at(
+        &mut self,
+        media_id: Uuid,
+        captured_at_unix_ms: Option<u64>,
+    ) -> Result<(), StorageError> {
+        let entry = self
+            .media
+            .get_mut(&media_id)
+            .ok_or(StorageError::MediaNotFound(media_id))?;
+        entry.captured_at_unix_ms = captured_at_unix_ms;
+        self.catalog_revision = self.catalog_revision.saturating_add(1);
+        Ok(())
+    }
+
+    /// Groups compound media (Live/Motion Photos, RAW+JPEG+XMP, video+subtitles) sharing the
+    /// same stem within a folder and records cross-links in `companion_ids`.
+    pub fn link_companion_media(&mut self) -> usize {
+        let mut groups: BTreeMap<(Uuid, String), Vec<Uuid>> = BTreeMap::new();
+        for entry in self.media.values() {
+            if entry.trashed_at_unix_ms.is_some() {
+                continue;
+            }
+            let stem = Path::new(&entry.original_name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&entry.original_name)
+                .to_ascii_lowercase();
+            groups
+                .entry((entry.folder_id, stem))
+                .or_default()
+                .push(entry.id);
+        }
+
+        let mut linked_items = 0usize;
+        for ids in groups.values() {
+            if ids.len() < 2 {
+                continue;
+            }
+            for &id in ids {
+                if let Some(entry) = self.media.get_mut(&id) {
+                    let peers: Vec<Uuid> =
+                        ids.iter().copied().filter(|&other| other != id).collect();
+                    if entry.companion_ids != peers {
+                        entry.companion_ids = peers;
+                        linked_items += 1;
+                    }
+                }
+            }
+        }
+        if linked_items > 0 {
+            self.catalog_revision = self.catalog_revision.saturating_add(1);
+        }
+        linked_items
+    }
+
+    /// Collects media IDs for slideshow playback, optionally traversing all descendant folders.
+    pub fn collect_subtree_media_ids(&self, folder_id: Uuid, recursive: bool) -> Vec<Uuid> {
+        let (subfolders, media) = self.list_folder_contents(folder_id);
+        let mut out: Vec<Uuid> = media.into_iter().map(|m| m.id).collect();
+        if recursive {
+            for child in subfolders {
+                out.extend(self.collect_subtree_media_ids(child.id, true));
+            }
+        }
+        out
     }
 
     /// Offline full-text search across names, tags, Markdown notes, EXIF camera, and MIME types.
@@ -1425,6 +1568,7 @@ mod tests {
                 thumb: None,
                 tags: vec!["documents".to_string()],
                 note_markdown: Some("Confidential trip visa".to_string()),
+                companion_ids: Vec::new(),
                 favorite: false,
                 trashed_at_unix_ms: None,
                 captured_at_unix_ms: Some(1_700_000_100_000),
@@ -1451,6 +1595,7 @@ mod tests {
                 thumb: None,
                 tags: vec![],
                 note_markdown: None,
+                companion_ids: Vec::new(),
                 favorite: false,
                 trashed_at_unix_ms: None,
                 captured_at_unix_ms: Some(1_700_000_200_000),
@@ -1505,5 +1650,140 @@ mod tests {
         assert_eq!(doctor.missing_blobs_count, 0);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn companion_linking_tree_export_slideshow_and_rollback_work() {
+        use meshvault_crypto::{encrypt_stream, Argon2Params, SecretString};
+        use std::io::Cursor;
+
+        let dir = std::env::temp_dir().join(format!("mv_stage7_storage_{}", Uuid::new_v4()));
+        let export_dir =
+            std::env::temp_dir().join(format!("mv_stage7_export_{}", Uuid::new_v4()));
+        let layout = VaultLayout::new(&dir);
+        let pass = SecretString::from("rollback-pass".to_string());
+        let (hdr, mvk) = VaultHeader::create_with_passphrase(
+            &pass,
+            Argon2Params::fast_test(),
+            1_700_000_000_000,
+            0,
+        )
+        .unwrap();
+        layout.write_header_pair(&hdr).unwrap();
+
+        let mut catalog = VaultCatalog::new(hdr.vault_id, 1_700_000_000_000);
+        let sub_id = catalog
+            .ensure_folder_path(
+                catalog.root_folder_id,
+                &["Trips".to_string(), "Altai".to_string()],
+                1_700_000_000_000,
+            )
+            .unwrap();
+
+        let raw_id = Uuid::new_v4();
+        let jpg_id = Uuid::new_v4();
+        for (id, name, kind, mime, payload) in [
+            (
+                raw_id,
+                "IMG_001.DNG",
+                MediaKind::RawPhoto,
+                "image/x-adobe-dng",
+                b"RAW_BYTES".as_slice(),
+            ),
+            (
+                jpg_id,
+                "IMG_001.JPG",
+                MediaKind::Photo,
+                "image/jpeg",
+                b"JPG_BYTES".as_slice(),
+            ),
+        ] {
+            let fek = FileEncryptionKey::generate();
+            let wrapped = wrap_fek(&mvk, id, &fek).unwrap().to_vec();
+            let blob_path = layout.blob_path(id);
+            fs::create_dir_all(blob_path.parent().unwrap()).unwrap();
+            let mut out_file = fs::File::create(&blob_path).unwrap();
+            encrypt_stream(&mut Cursor::new(payload), &mut out_file, &fek, id, 65_536).unwrap();
+
+            catalog.insert_media(MediaEntry {
+                id,
+                folder_id: sub_id,
+                linked_folder_ids: Vec::new(),
+                original_name: name.to_string(),
+                mime_type: mime.to_string(),
+                kind,
+                plaintext_size: payload.len() as u64,
+                dedup_blake3: *blake3::hash(payload).as_bytes(),
+                phash: None,
+                width: None,
+                height: None,
+                exif_camera: None,
+                micro_thumb: None,
+                wrapped_fek: wrapped,
+                thumb: None,
+                tags: Vec::new(),
+                note_markdown: None,
+                companion_ids: Vec::new(),
+                favorite: false,
+                trashed_at_unix_ms: None,
+                captured_at_unix_ms: None,
+                imported_at_unix_ms: 1_700_000_000_000,
+            });
+        }
+
+        // 1. Companion linking (RAW + JPEG)
+        assert_eq!(catalog.link_companion_media(), 2);
+        assert_eq!(catalog.media.get(&raw_id).unwrap().companion_ids, vec![jpg_id]);
+
+        // 2. Non-destructive date edit
+        catalog
+            .update_media_captured_at(jpg_id, Some(1_710_000_000_000))
+            .unwrap();
+        assert_eq!(
+            catalog.media.get(&jpg_id).unwrap().captured_at_unix_ms,
+            Some(1_710_000_000_000)
+        );
+
+        // 3. Recursive slideshow iterator
+        assert_eq!(
+            catalog
+                .collect_subtree_media_ids(catalog.root_folder_id, false)
+                .len(),
+            0
+        );
+        assert_eq!(
+            catalog
+                .collect_subtree_media_ids(catalog.root_folder_id, true)
+                .len(),
+            2
+        );
+
+        // 4. Snapshot rollback
+        layout.save_catalog(&mvk, &catalog).unwrap();
+        let saved_rev = catalog.catalog_revision;
+        layout.create_rollback_snapshot().unwrap();
+        catalog.rename_folder(sub_id, "BrokenMigration").unwrap();
+        layout.save_catalog(&mvk, &catalog).unwrap();
+        layout.rollback_to_snapshot().unwrap();
+        let restored = layout.load_catalog(&mvk).unwrap();
+        assert_eq!(restored.catalog_revision, saved_rev);
+        assert_eq!(restored.folders.get(&sub_id).unwrap().name, "Altai");
+
+        // 5. Recursive folder tree export
+        let exported = layout
+            .export_folder_tree(&mvk, &restored, restored.root_folder_id, &export_dir)
+            .unwrap();
+        assert_eq!(exported, 2);
+        assert_eq!(
+            fs::read(export_dir.join("Trips/Altai/IMG_001.JPG")).unwrap(),
+            b"JPG_BYTES"
+        );
+        assert_eq!(
+            fs::read(export_dir.join("Trips/Altai/IMG_001.DNG")).unwrap(),
+            b"RAW_BYTES"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&export_dir);
     }
 }

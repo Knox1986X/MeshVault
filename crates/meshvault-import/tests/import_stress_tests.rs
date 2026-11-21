@@ -280,3 +280,124 @@ fn jpeg_exif_parser_extracts_camera_and_datetime_without_disk_writes() {
     assert_eq!(parsed.camera.as_deref(), Some("Fujifilm X-T5"));
     assert!(parsed.captured_at_unix_ms.is_some());
 }
+
+fn build_tar_archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (name, data) in entries {
+        let mut header = [0u8; 512];
+        let name_bytes = name.as_bytes();
+        header[..name_bytes.len()].copy_from_slice(name_bytes);
+        let size_oct = format!("{:011o}\0", data.len());
+        header[124..136].copy_from_slice(size_oct.as_bytes());
+        header[156] = b'0';
+        out.extend_from_slice(&header);
+        out.extend_from_slice(data);
+        let pad = (512 - (data.len() % 512)) % 512;
+        out.resize(out.len() + pad, 0);
+    }
+    out.resize(out.len() + 1024, 0);
+    out
+}
+
+fn build_zip_store_archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (name, data) in entries {
+        let nb = name.as_bytes();
+        out.extend_from_slice(b"PK\x03\x04");
+        out.extend_from_slice(&20u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(nb.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(nb);
+        out.extend_from_slice(data);
+    }
+    out
+}
+
+#[test]
+fn archive_takeout_pdf_scanner_and_redaction_work_in_ram() {
+    use image::{ImageFormat, Rgb, RgbImage};
+    use meshvault_crypto::{Argon2Params, SecretString, VaultHeader};
+    use meshvault_import::{
+        import_tar_bytes_in_ram, import_zip_store_bytes_in_ram, redact_image_regions_in_ram,
+        wrap_jpeg_as_pdf_in_ram, RedactionRect,
+    };
+    use meshvault_storage::{VaultCatalog, VaultLayout};
+    use std::io::Cursor;
+
+    let tmp = TempDir::new().unwrap();
+    let layout = VaultLayout::new(tmp.path());
+    let pass = SecretString::from("archive-pass".to_string());
+    let (hdr, mvk) = VaultHeader::create_with_passphrase(
+        &pass,
+        Argon2Params::fast_test(),
+        1_700_000_000_000,
+        0,
+    )
+    .unwrap();
+    layout.write_header_pair(&hdr).unwrap();
+    let mut catalog = VaultCatalog::new(hdr.vault_id, 1_700_000_000_000);
+    let root = catalog.root_folder_id;
+
+    // 1. In-RAM JPEG generation + redaction + PDF Document Scanner wrapper
+    let mut img = RgbImage::from_pixel(32, 32, Rgb([240, 240, 240]));
+    let mut jpeg_buf = Vec::new();
+    image::DynamicImage::ImageRgb8(img.clone())
+        .write_to(&mut Cursor::new(&mut jpeg_buf), ImageFormat::Jpeg)
+        .unwrap();
+
+    let redacted = redact_image_regions_in_ram(
+        "image/jpeg",
+        &jpeg_buf,
+        &[RedactionRect {
+            x: 4,
+            y: 4,
+            width: 12,
+            height: 12,
+        }],
+    )
+    .expect("redact");
+    let decoded_redacted = image::load_from_memory(&redacted).unwrap().to_rgb8();
+    assert!(decoded_redacted.get_pixel(8, 8).0[0] < 40);
+    // Unused mut suppression not needed when we keep img clean
+    let _ = &mut img;
+
+    let pdf_bytes = wrap_jpeg_as_pdf_in_ram(&redacted, 32, 32).expect("pdf");
+    assert!(pdf_bytes.starts_with(b"%PDF-1.4"));
+    assert!(pdf_bytes.windows(5).any(|w| w == b"%%EOF"));
+
+    // 2. TAR + Google Takeout JSON sidecar import strictly in RAM
+    let takeout_json = br#"{"photoTakenTime":{"timestamp":"1712345678"}}"#;
+    let tar_bytes = build_tar_archive(&[
+        ("Takeout/Vacation/beach.jpg", &jpeg_buf),
+        ("Takeout/Vacation/beach.jpg.json", takeout_json),
+    ]);
+    let tar_report =
+        import_tar_bytes_in_ram(&layout, &mvk, &mut catalog, &tar_bytes, root, 1_700_000_001_000)
+            .expect("tar import");
+    assert_eq!(tar_report.imported_files, 1);
+    assert_eq!(tar_report.takeout_timestamps_applied, 1);
+    let imported = catalog.search_media("beach");
+    assert_eq!(imported.len(), 1);
+    assert_eq!(imported[0].captured_at_unix_ms, Some(1_712_345_678_000));
+
+    // 3. ZIP Store import strictly in RAM
+    let zip_bytes = build_zip_store_archive(&[("Scanner/contract.pdf", &pdf_bytes)]);
+    let zip_report = import_zip_store_bytes_in_ram(
+        &layout,
+        &mvk,
+        &mut catalog,
+        &zip_bytes,
+        root,
+        1_700_000_002_000,
+    )
+    .expect("zip import");
+    assert_eq!(zip_report.imported_files, 1);
+    assert_eq!(catalog.search_media("contract").len(), 1);
+}

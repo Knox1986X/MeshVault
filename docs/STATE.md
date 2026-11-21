@@ -33,6 +33,10 @@
    - проверено Rust-тестом `desktop_bridge_unlocks_imports_streams_range_in_ram_and_locks` и JS-тестами `apps/desktop/tests/desktop_cockpit.test.mjs` (4/4).
 4. Пакет для CachyOS / Arch Linux (`packaging/`):
    - добавлены `packaging/PKGBUILD` и `packaging/meshvault.desktop`, провалидированы в CI.
+5. Закрыты оставшиеся прикладные возможности дорожной карты без участия Dropbox:
+   - связывание составных медиа (`link_companion_media`), правка даты (`update_media_captured_at`), рекурсивный обход для слайд-шоу (`collect_subtree_media_ids`), обратный экспорт дерева папок (`export_folder_tree`) и точка отката при миграции (`create_rollback_snapshot` / `rollback_to_snapshot`);
+   - импорт TAR и ZIP Store из ОЗУ с поддержкой Google Takeout `.json` (`import_tar_bytes_in_ram` / `import_zip_store_bytes_in_ram`), PDF-сканер в ОЗУ (`wrap_jpeg_as_pdf_in_ram`) и приватная ретушь областей в ОЗУ (`redact_image_regions_in_ram`);
+   - зашифрованный перенос настроек и правил автосортировки без раскрытия ключей (`seal_vault_profile` / `open_vault_profile`), а также `ThermalBatteryGuard` и `InboxFolderWatcher` на Android.
 
 ## Следующий шаг
 

@@ -1,15 +1,19 @@
+pub mod archive;
 pub mod error;
 pub mod exif;
+pub mod pdf;
 pub mod pipeline;
 pub mod scanner;
 pub mod wal;
 
+pub use archive::{import_tar_bytes_in_ram, import_zip_store_bytes_in_ram, ArchiveImportReport};
 pub use error::ImportError;
 pub use exif::{
     classify_by_extension, compute_dhash_64, extract_metadata_and_thumbnails,
-    parse_exif_datetime_unix_ms, parse_jpeg_exif, strip_metadata_for_clean_export,
-    ExtractedMediaMeta, ParsedExif,
+    parse_exif_datetime_unix_ms, parse_jpeg_exif, redact_image_regions_in_ram,
+    strip_metadata_for_clean_export, ExtractedMediaMeta, ParsedExif, RedactionRect,
 };
+pub use pdf::wrap_jpeg_as_pdf_in_ram;
 pub use pipeline::{
     generate_synthetic_tree, ImportOptions, ImportPipeline, ImportReport, QuarantinedItem,
     SingleImportResult,

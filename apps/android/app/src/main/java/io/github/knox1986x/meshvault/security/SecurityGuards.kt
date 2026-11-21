@@ -112,3 +112,30 @@ object AppIconSwitcher {
         pm.setComponentEnabledSetting(mainComponent, mainState, PackageManager.DONT_KILL_APP)
     }
 }
+
+/**
+ * Thermal and battery protection guard for background import / Vault Scrub Foreground Services.
+ */
+object ThermalBatteryGuard {
+    data class PowerThermalStatus(
+        val batteryPercent: Int,
+        val isCharging: Boolean,
+        val temperatureTenthsCelsius: Int,
+    )
+
+    fun shouldPauseHeavyWork(status: PowerThermalStatus): Boolean {
+        if (status.temperatureTenthsCelsius >= 430) return true
+        if (!status.isCharging && status.batteryPercent < 15) return true
+        return false
+    }
+}
+
+/**
+ * Detects newly arrived items in watched SAF Inbox Folders for 1-tap encrypted import.
+ */
+object InboxFolderWatcher {
+    fun findNewCandidateIds(
+        currentDocumentIds: List<String>,
+        alreadyProcessedIds: Set<String>,
+    ): List<String> = currentDocumentIds.filter { it.isNotBlank() && it !in alreadyProcessedIds }
+}

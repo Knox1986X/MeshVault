@@ -246,3 +246,39 @@ fn lan_qr_pairing_replay_protection_pkce_scope_and_usb_backup_scrub() {
         b"cipher"
     );
 }
+
+#[test]
+fn encrypted_profile_export_transfers_autosort_rules_without_keys() {
+    use meshvault_sync::{
+        open_vault_profile, seal_vault_profile, AutoSortRule, EncryptedVaultProfile,
+    };
+
+    let profile = EncryptedVaultProfile {
+        version: 1,
+        locale: "ru".to_string(),
+        slideshow_interval_sec: 5,
+        sync_policy: SyncPolicy {
+            wifi_only: true,
+            require_charging: true,
+            min_battery_percent: 30,
+            size_padding_bucket_bytes: 65_536,
+        },
+        auto_sort_rules: vec![AutoSortRule {
+            rule_name: "SecretRawRule".to_string(),
+            match_extension: Some("dng".to_string()),
+            target_folder_path: vec!["RAW".to_string(), "Camera".to_string()],
+            auto_tags: vec!["raw".to_string()],
+        }],
+    };
+
+    let pass = SecretString::from("profile-transfer-key".to_string());
+    let wrong = SecretString::from("wrong-pass".to_string());
+    let sealed = seal_vault_profile(&profile, &pass, Argon2Params::fast_test()).expect("seal");
+    assert!(!sealed
+        .windows(b"SecretRawRule".len())
+        .any(|w| w == b"SecretRawRule"));
+
+    assert!(open_vault_profile(&sealed, &wrong).is_err());
+    let reopened = open_vault_profile(&sealed, &pass).expect("open");
+    assert_eq!(reopened, profile);
+}
