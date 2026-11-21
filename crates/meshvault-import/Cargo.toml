@@ -1,0 +1,14 @@
+[package]
+name = "meshvault-import"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Transactional recursive folder import pipeline, keyed BLAKE3 deduplication, and WAL resume for MeshVault"
+
+[dependencies]
+meshvault-crypto = { path = "../meshvault-crypto" }
+meshvault-storage = { path = "../meshvault-storage" }
+serde.workspace = true
+uuid.workspace = true

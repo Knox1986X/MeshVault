@@ -1,0 +1,14 @@
+[package]
+name = "meshvault-sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Zero-knowledge Dropbox App Folder replication and LAN P2P sync protocol for MeshVault"
+
+[dependencies]
+meshvault-crypto = { path = "../meshvault-crypto" }
+meshvault-storage = { path = "../meshvault-storage" }
+serde.workspace = true
+uuid.workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "meshvault-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Command-line client, recovery tool, and vault diagnostics for MeshVault on CachyOS Linux"
+
+[[bin]]
+name = "meshvault"
+path = "src/main.rs"
+
+[dependencies]
+meshvault-crypto = { path = "../meshvault-crypto" }
+meshvault-import = { path = "../meshvault-import" }
+meshvault-storage = { path = "../meshvault-storage" }
+meshvault-sync = { path = "../meshvault-sync" }
+serde_json.workspace = true
