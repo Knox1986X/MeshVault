@@ -265,20 +265,14 @@ impl MeshVaultSession {
 
     /// Returns the UUID string of the root folder inside the encrypted catalog.
     pub fn root_folder_id(&self) -> Result<String, FfiVaultError> {
-        let guard = self
-            .inner
-            .read()
-            .map_err(|_| FfiVaultError::VaultLocked)?;
+        let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
         let catalog = guard.catalog.as_ref().ok_or(FfiVaultError::VaultLocked)?;
         Ok(catalog.root_folder_id.to_string())
     }
 
     /// Generates and registers a new 24-word Recovery Kit slot in the dual vault header.
     pub fn add_recovery_kit_slot(&self) -> Result<String, FfiVaultError> {
-        let mut guard = self
-            .inner
-            .write()
-            .map_err(|_| FfiVaultError::VaultLocked)?;
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
         let mvk = guard.mvk.take().ok_or(FfiVaultError::VaultLocked)?;
         let kit = RecoveryKit::generate();
         let res = guard.header.add_recovery_slot(&mvk, &kit);
@@ -294,10 +288,7 @@ impl MeshVaultSession {
         old_passphrase: String,
         new_passphrase: String,
     ) -> Result<(), FfiVaultError> {
-        let mut guard = self
-            .inner
-            .write()
-            .map_err(|_| FfiVaultError::VaultLocked)?;
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
         if guard.mvk.is_none() {
             return Err(FfiVaultError::VaultLocked);
         }
@@ -318,10 +309,7 @@ impl MeshVaultSession {
         now_unix_ms: u64,
     ) -> Result<String, FfiVaultError> {
         let parent_uuid = parse_uuid(&parent_folder_id)?;
-        let mut guard = self
-            .inner
-            .write()
-            .map_err(|_| FfiVaultError::VaultLocked)?;
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
         let inner = &mut *guard;
         let mvk = inner.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
         let catalog = inner.catalog.as_mut().ok_or(FfiVaultError::VaultLocked)?;
@@ -337,10 +325,7 @@ impl MeshVaultSession {
         folder_id: String,
     ) -> Result<FfiFolderContentsDto, FfiVaultError> {
         let target_uuid = parse_uuid(&folder_id)?;
-        let guard = self
-            .inner
-            .read()
-            .map_err(|_| FfiVaultError::VaultLocked)?;
+        let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
         let catalog = guard.catalog.as_ref().ok_or(FfiVaultError::VaultLocked)?;
         let (subfolders, items) = catalog.list_folder_contents(target_uuid);
 
@@ -387,10 +372,7 @@ impl MeshVaultSession {
         now_unix_ms: u64,
     ) -> Result<FfiImportReportDto, FfiVaultError> {
         let parent_uuid = parse_uuid(&target_parent_id)?;
-        let mut guard = self
-            .inner
-            .write()
-            .map_err(|_| FfiVaultError::VaultLocked)?;
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
         let inner = &mut *guard;
         let mvk = inner.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
         let catalog = inner.catalog.as_mut().ok_or(FfiVaultError::VaultLocked)?;
@@ -427,10 +409,7 @@ impl MeshVaultSession {
         chunk_index: u64,
     ) -> Result<Vec<u8>, FfiVaultError> {
         let uuid = parse_uuid(&media_id)?;
-        let guard = self
-            .inner
-            .read()
-            .map_err(|_| FfiVaultError::VaultLocked)?;
+        let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
         let mvk = guard.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
         let catalog = guard.catalog.as_ref().ok_or(FfiVaultError::VaultLocked)?;
 
@@ -454,10 +433,7 @@ impl MeshVaultSession {
     /// Decrypts all chunks of a media item into an in-memory buffer (for image viewer).
     pub fn read_media_all_bytes(&self, media_id: String) -> Result<Vec<u8>, FfiVaultError> {
         let uuid = parse_uuid(&media_id)?;
-        let guard = self
-            .inner
-            .read()
-            .map_err(|_| FfiVaultError::VaultLocked)?;
+        let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
         let mvk = guard.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
         let catalog = guard.catalog.as_ref().ok_or(FfiVaultError::VaultLocked)?;
 
@@ -482,10 +458,7 @@ impl MeshVaultSession {
     /// Decrypts a high-resolution thumbnail from its 4 MiB `.mvt` pack into RAM.
     pub fn read_thumbnail_bytes(&self, media_id: String) -> Result<Vec<u8>, FfiVaultError> {
         let uuid = parse_uuid(&media_id)?;
-        let guard = self
-            .inner
-            .read()
-            .map_err(|_| FfiVaultError::VaultLocked)?;
+        let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
         let mvk = guard.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
         let catalog = guard.catalog.as_ref().ok_or(FfiVaultError::VaultLocked)?;
 
@@ -502,10 +475,7 @@ impl MeshVaultSession {
 
     /// Runs Vault Scrub across all encrypted media blobs and returns a health report.
     pub fn scrub_vault(&self) -> Result<FfiScrubReportDto, FfiVaultError> {
-        let guard = self
-            .inner
-            .read()
-            .map_err(|_| FfiVaultError::VaultLocked)?;
+        let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
         let mvk = guard.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
         let catalog = guard.catalog.as_ref().ok_or(FfiVaultError::VaultLocked)?;
 

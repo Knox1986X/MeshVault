@@ -40,12 +40,13 @@ fn stress_test_5000_objects_recursive_import_with_simulated_crash_and_wal_resume
         max_items_before_simulated_crash: Some(2_345),
     };
 
+    let root_id = catalog.root_folder_id;
     let err = ImportPipeline::run_directory_import(
         &layout,
         &mvk,
         &mut catalog,
         source_tmp.path(),
-        catalog.root_folder_id,
+        root_id,
         &crash_options,
         1_700_000_001_000,
     )
@@ -146,12 +147,13 @@ fn real_image_thumbnail_pack_dedup_quarantine_and_incremental_merge() {
     let preview = scan_directory_tree(source_tmp.path(), &ScanOptions::default()).expect("scan");
     assert_eq!(preview.counts.photos, 2);
 
+    let root_id = catalog.root_folder_id;
     let report = ImportPipeline::run_directory_import(
         &layout,
         &mvk,
         &mut catalog,
         source_tmp.path(),
-        catalog.root_folder_id,
+        root_id,
         &ImportOptions::default(),
         1_700_000_001_000,
     )
@@ -181,7 +183,7 @@ fn real_image_thumbnail_pack_dedup_quarantine_and_incremental_merge() {
         &mvk,
         &mut catalog,
         source_tmp.path(),
-        catalog.root_folder_id,
+        root_id,
         &ImportOptions::default(),
         1_700_000_002_000,
     )
