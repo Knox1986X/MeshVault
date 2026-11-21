@@ -175,9 +175,7 @@ fn ffi_stage4_decoy_trash_clean_export_and_doctor() {
     let cleaned = session
         .clean_export_media_bytes(imported.media_id.clone())
         .expect("clean export");
-    assert!(meshvault_import::parse_jpeg_exif(&cleaned)
-        .camera
-        .is_none());
+    assert!(meshvault_import::parse_jpeg_exif(&cleaned).camera.is_none());
 
     // Tagging, search, Safe Presentation, and Doctor report.
     session
@@ -229,4 +227,3 @@ fn ffi_stage4_decoy_trash_clean_export_and_doctor() {
     assert_eq!(decoy.vault_metrics().unwrap().total_media, 0);
     assert_eq!(decoy.list_all_media_timeline().unwrap().len(), 0);
 }
-

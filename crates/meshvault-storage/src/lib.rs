@@ -591,6 +591,8 @@ pub struct MediaEntry {
     pub wrapped_fek: Vec<u8>,
     pub thumb: Option<ThumbLocator>,
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub note_markdown: Option<String>,
     pub favorite: bool,
     pub trashed_at_unix_ms: Option<u64>,
     pub captured_at_unix_ms: Option<u64>,
@@ -833,7 +835,7 @@ impl VaultCatalog {
             .ok_or(StorageError::MediaNotFound(media_id))?;
         entry.wrapped_fek.fill(0);
 
-        let dedup_key = hex_32(&entry.content_blake3);
+        let dedup_key = hex_32(&entry.dedup_blake3);
         if self.dedup_index.get(&dedup_key) == Some(&media_id) {
             self.dedup_index.remove(&dedup_key);
         }
@@ -880,11 +882,7 @@ impl VaultCatalog {
     }
 
     /// Moves a media item into a different folder inside the encrypted catalog.
-    pub fn move_media(
-        &mut self,
-        media_id: Uuid,
-        dest_folder_id: Uuid,
-    ) -> Result<(), StorageError> {
+    pub fn move_media(&mut self, media_id: Uuid, dest_folder_id: Uuid) -> Result<(), StorageError> {
         if !self.folders.contains_key(&dest_folder_id) {
             return Err(StorageError::FolderNotFound(dest_folder_id));
         }
@@ -964,7 +962,7 @@ impl VaultCatalog {
         let candidates: Vec<&MediaEntry> = self
             .timeline_media()
             .into_iter()
-            .filter(|m| m.dhash_64.is_some())
+            .filter(|m| m.phash.is_some())
             .collect();
         let mut visited = vec![false; candidates.len()];
         let mut groups = Vec::new();
@@ -973,14 +971,14 @@ impl VaultCatalog {
             if visited[i] {
                 continue;
             }
-            let h_i = candidates[i].dhash_64.unwrap_or(0);
+            let h_i = candidates[i].phash.unwrap_or(0);
             let mut cluster = vec![candidates[i].id];
             visited[i] = true;
             for j in (i + 1)..candidates.len() {
                 if visited[j] {
                     continue;
                 }
-                let h_j = candidates[j].dhash_64.unwrap_or(0);
+                let h_j = candidates[j].phash.unwrap_or(0);
                 if (h_i ^ h_j).count_ones() <= max_hamming {
                     cluster.push(candidates[j].id);
                     visited[j] = true;
@@ -1412,23 +1410,25 @@ mod tests {
             MediaEntry {
                 id: m1,
                 folder_id: folder,
+                linked_folder_ids: Vec::new(),
                 original_name: "passport_scan.jpg".to_string(),
                 mime_type: "image/jpeg".to_string(),
                 kind: MediaKind::Photo,
                 plaintext_size: 1024,
-                content_blake3: [0x11; 32],
-                dhash_64: Some(0xFFFF_0000_0000_0000),
-                wrapped_fek: wrapped.clone(),
-                chunk_size: 1024 * 1024,
-                thumb: None,
-                micro_thumb: None,
+                dedup_blake3: [0x11; 32],
+                phash: Some(0xFFFF_0000_0000_0000),
+                width: None,
+                height: None,
                 exif_camera: Some("Pixel 9 Pro".to_string()),
-                captured_at_unix_ms: Some(1_700_000_100_000),
-                imported_at_unix_ms: 1_700_000_100_000,
-                favorite: false,
-                trashed_at_unix_ms: None,
+                micro_thumb: None,
+                wrapped_fek: wrapped.clone(),
+                thumb: None,
                 tags: vec!["documents".to_string()],
                 note_markdown: Some("Confidential trip visa".to_string()),
+                favorite: false,
+                trashed_at_unix_ms: None,
+                captured_at_unix_ms: Some(1_700_000_100_000),
+                imported_at_unix_ms: 1_700_000_100_000,
             },
         );
         catalog.media.insert(
@@ -1436,23 +1436,25 @@ mod tests {
             MediaEntry {
                 id: m2,
                 folder_id: folder,
+                linked_folder_ids: Vec::new(),
                 original_name: "passport_scan_2.jpg".to_string(),
                 mime_type: "image/jpeg".to_string(),
                 kind: MediaKind::Photo,
                 plaintext_size: 1024,
-                content_blake3: [0x22; 32],
-                dhash_64: Some(0xFFFF_0000_0000_0003),
-                wrapped_fek: wrapped,
-                chunk_size: 1024 * 1024,
-                thumb: None,
-                micro_thumb: None,
+                dedup_blake3: [0x22; 32],
+                phash: Some(0xFFFF_0000_0000_0003),
+                width: None,
+                height: None,
                 exif_camera: None,
-                captured_at_unix_ms: Some(1_700_000_200_000),
-                imported_at_unix_ms: 1_700_000_200_000,
-                favorite: false,
-                trashed_at_unix_ms: None,
+                micro_thumb: None,
+                wrapped_fek: wrapped,
+                thumb: None,
                 tags: vec![],
                 note_markdown: None,
+                favorite: false,
+                trashed_at_unix_ms: None,
+                captured_at_unix_ms: Some(1_700_000_200_000),
+                imported_at_unix_ms: 1_700_000_200_000,
             },
         );
         catalog.dedup_index.insert(hex_32(&[0x11; 32]), m1);

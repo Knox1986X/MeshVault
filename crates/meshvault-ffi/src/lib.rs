@@ -9,9 +9,7 @@ use meshvault_crypto::{
 use meshvault_import::{
     strip_metadata_for_clean_export, DedupPolicy, ImportOptions, ImportPipeline,
 };
-use meshvault_storage::{
-    AuditEventKind, AuditLogEntry, MediaKind, VaultCatalog, VaultLayout,
-};
+use meshvault_storage::{AuditEventKind, AuditLogEntry, MediaKind, VaultCatalog, VaultLayout};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -808,11 +806,7 @@ impl MeshVaultSession {
     }
 
     /// Moves a media item into the encrypted 30-day Trash.
-    pub fn move_to_trash(
-        &self,
-        media_id: String,
-        now_unix_ms: u64,
-    ) -> Result<(), FfiVaultError> {
+    pub fn move_to_trash(&self, media_id: String, now_unix_ms: u64) -> Result<(), FfiVaultError> {
         let uuid = parse_uuid(&media_id)?;
         let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
         let inner = &mut *guard;
@@ -988,9 +982,7 @@ impl MeshVaultSession {
     pub fn list_audit_events(&self) -> Result<Vec<FfiAuditEventDto>, FfiVaultError> {
         let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
         let mvk = guard.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
-        let events = guard
-            .layout
-            .load_audit_events(mvk, guard.header.vault_id)?;
+        let events = guard.layout.load_audit_events(mvk, guard.header.vault_id)?;
         Ok(events
             .into_iter()
             .map(|e| FfiAuditEventDto {

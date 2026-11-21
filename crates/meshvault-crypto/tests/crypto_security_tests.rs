@@ -386,9 +386,13 @@ fn explicit_zeroize_wipes_sensitive_key_buffers() {
 fn decoy_slot_isolates_decoy_mvk_from_real_mvk() {
     let real_pass = SecretString::from("real-vault-secret".to_string());
     let decoy_pass = SecretString::from("decoy-pin-1234".to_string());
-    let (mut header, real_mvk) =
-        VaultHeader::create_with_passphrase(&real_pass, fast_test_params(), 1_700_000_000_000, 0)
-            .expect("create header");
+    let (mut header, real_mvk) = VaultHeader::create_with_passphrase(
+        &real_pass,
+        Argon2Params::fast_test(),
+        1_700_000_000_000,
+        0,
+    )
+    .expect("create header");
 
     let decoy_mvk = MasterVaultKey::generate();
     assert_ne!(real_mvk.expose(), decoy_mvk.expose());
@@ -418,4 +422,3 @@ fn decoy_slot_isolates_decoy_mvk_from_real_mvk() {
         CryptoError::SlotNotFound
     );
 }
-
