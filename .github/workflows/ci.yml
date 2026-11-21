@@ -70,7 +70,9 @@ jobs:
           fi
 
       - name: Check CLI and FFI cdylib builds
-        run: cargo build --bin meshvault -p meshvault-ffi
+        run: |
+          cargo build --bin meshvault
+          cargo build -p meshvault-ffi
 
   android-app:
     name: Android Build and Unit Tests
