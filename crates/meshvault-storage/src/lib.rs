@@ -591,6 +591,86 @@ impl VaultCatalog {
         (subfolders, items)
     }
 
+    /// Returns folder hierarchy breadcrumbs from Root down to `folder_id`.
+    pub fn breadcrumbs(&self, folder_id: Uuid) -> Vec<&FolderNode> {
+        let mut chain = Vec::new();
+        let mut current = Some(folder_id);
+        let mut guard = 0usize;
+        while let Some(id) = current {
+            if guard > 128 {
+                break;
+            }
+            guard += 1;
+            let Some(node) = self.folders.get(&id) else {
+                break;
+            };
+            chain.push(node);
+            current = node.parent_id;
+        }
+        chain.reverse();
+        chain
+    }
+
+    /// Returns active non-trashed media sorted newest-first for the chronological Gallery timeline.
+    pub fn timeline_media(&self) -> Vec<&MediaEntry> {
+        let mut items: Vec<&MediaEntry> = self
+            .media
+            .values()
+            .filter(|m| m.trashed_at_unix_ms.is_none())
+            .collect();
+        items.sort_by(|a, b| {
+            let ta = a.captured_at_unix_ms.unwrap_or(a.imported_at_unix_ms);
+            let tb = b.captured_at_unix_ms.unwrap_or(b.imported_at_unix_ms);
+            tb.cmp(&ta).then_with(|| a.original_name.cmp(&b.original_name))
+        });
+        items
+    }
+
+    /// Computes aggregate counts and per-category byte totals for Dark Cockpit metrics and StorageDonut.
+    pub fn compute_metrics(&self) -> VaultMetrics {
+        let mut metrics = VaultMetrics {
+            folder_count: self.folders.len() as u64,
+            ..VaultMetrics::default()
+        };
+        for m in self.media.values() {
+            if m.trashed_at_unix_ms.is_some() {
+                metrics.trashed_count += 1;
+                metrics.trashed_bytes = metrics.trashed_bytes.saturating_add(m.plaintext_size);
+                continue;
+            }
+            metrics.total_media += 1;
+            metrics.total_bytes = metrics.total_bytes.saturating_add(m.plaintext_size);
+            match m.kind {
+                MediaKind::Photo | MediaKind::Animation => {
+                    metrics.photo_count += 1;
+                    metrics.photo_bytes = metrics.photo_bytes.saturating_add(m.plaintext_size);
+                }
+                MediaKind::Video => {
+                    metrics.video_count += 1;
+                    metrics.video_bytes = metrics.video_bytes.saturating_add(m.plaintext_size);
+                }
+                MediaKind::RawPhoto => {
+                    metrics.raw_count += 1;
+                    metrics.raw_bytes = metrics.raw_bytes.saturating_add(m.plaintext_size);
+                }
+                MediaKind::DocumentPdf | MediaKind::MarkdownNote => {
+                    metrics.doc_count += 1;
+                    metrics.doc_bytes = metrics.doc_bytes.saturating_add(m.plaintext_size);
+                }
+                MediaKind::AudioNote => {
+                    metrics.audio_count += 1;
+                    metrics.audio_bytes = metrics.audio_bytes.saturating_add(m.plaintext_size);
+                }
+            }
+        }
+        metrics.thumb_pack_bytes = self
+            .thumb_packs
+            .values()
+            .map(|p| u64::from(p.payload_bytes))
+            .sum();
+        metrics
+    }
+
     /// Serializes and encrypts the entire catalog with the MVK-derived catalog key.
     pub fn seal(&self, mvk: &MasterVaultKey) -> Result<Vec<u8>, StorageError> {
         let catalog_key = mvk.derive_catalog_key();
@@ -666,6 +746,27 @@ impl VaultCatalog {
         let catalog: Self = serde_json::from_slice(&plain)?;
         Ok(catalog)
     }
+}
+
+/// Aggregate vault statistics displayed in Dark Cockpit MetricCard and StorageDonut.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultMetrics {
+    pub folder_count: u64,
+    pub total_media: u64,
+    pub total_bytes: u64,
+    pub photo_count: u64,
+    pub photo_bytes: u64,
+    pub video_count: u64,
+    pub video_bytes: u64,
+    pub raw_count: u64,
+    pub raw_bytes: u64,
+    pub doc_count: u64,
+    pub doc_bytes: u64,
+    pub audio_count: u64,
+    pub audio_bytes: u64,
+    pub thumb_pack_bytes: u64,
+    pub trashed_count: u64,
+    pub trashed_bytes: u64,
 }
 
 /// Summary report emitted by background integrity checks (`Vault Scrub`).

@@ -69,7 +69,155 @@ pub struct ImportReport {
 /// Transactional recursive folder import pipeline with WAL crash recovery.
 pub struct ImportPipeline;
 
+/// Outcome of importing a single in-memory stream item (for example from Android SAF).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SingleImportResult {
+    pub media_id: Uuid,
+    pub target_folder_id: Uuid,
+    pub deduplicated_skip: bool,
+    pub deduplicated_link: bool,
+    pub bytes_encrypted: u64,
+}
+
 impl ImportPipeline {
+    /// Imports a single media stream directly from RAM (used by Android SAF and Photo Picker)
+    /// without ever writing plaintext bytes to temporary disk files.
+    #[allow(clippy::too_many_arguments)]
+    pub fn import_bytes_item(
+        layout: &VaultLayout,
+        mvk: &MasterVaultKey,
+        catalog: &mut VaultCatalog,
+        target_parent_id: Uuid,
+        relative_folder_segments: &[String],
+        file_name: &str,
+        plain_bytes: &[u8],
+        dedup_policy: DedupPolicy,
+        captured_at_override_ms: Option<u64>,
+        now_unix_ms: u64,
+    ) -> Result<SingleImportResult, ImportError> {
+        if plain_bytes.is_empty() {
+            return Err(ImportError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "zero-length source file quarantined",
+            )));
+        }
+
+        let seg_refs: Vec<&str> = relative_folder_segments
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let target_folder_id =
+            catalog.ensure_folder_path(target_parent_id, &seg_refs, now_unix_ms)?;
+
+        let dedup_hash = mvk.keyed_dedup_hash(plain_bytes);
+        if let Some(existing_id) = catalog.find_by_dedup_hash(&dedup_hash) {
+            match dedup_policy {
+                DedupPolicy::SkipDuplicate => {
+                    return Ok(SingleImportResult {
+                        media_id: existing_id,
+                        target_folder_id,
+                        deduplicated_skip: true,
+                        deduplicated_link: false,
+                        bytes_encrypted: 0,
+                    });
+                }
+                DedupPolicy::LinkIntoTargetFolder => {
+                    if let Some(existing) = catalog.media.get_mut(&existing_id) {
+                        if existing.folder_id != target_folder_id
+                            && !existing.linked_folder_ids.contains(&target_folder_id)
+                        {
+                            existing.linked_folder_ids.push(target_folder_id);
+                            catalog.catalog_revision = catalog.catalog_revision.saturating_add(1);
+                        }
+                    }
+                    return Ok(SingleImportResult {
+                        media_id: existing_id,
+                        target_folder_id,
+                        deduplicated_skip: false,
+                        deduplicated_link: true,
+                        bytes_encrypted: 0,
+                    });
+                }
+                DedupPolicy::KeepIndependentCopy => {}
+            }
+        }
+
+        let item_id = Uuid::new_v4();
+        let fek = FileEncryptionKey::generate();
+        let part_path = layout.blob_part_path(item_id);
+        if let Some(parent) = part_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        {
+            let mut part_file = fs::File::create(&part_path)?;
+            encrypt_stream(
+                &mut Cursor::new(plain_bytes),
+                &mut part_file,
+                &fek,
+                item_id,
+                DEFAULT_CHUNK_SIZE,
+            )?;
+            part_file.sync_all()?;
+        }
+
+        let verify_file = fs::File::open(&part_path)?;
+        let mut blob_reader = ChunkedBlobReader::open(verify_file)?;
+        let verified_plain = blob_reader.verify_all_chunks(&fek)?;
+        if verified_plain != plain_bytes.len() as u64 {
+            let _ = fs::remove_file(&part_path);
+            return Err(ImportError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "post-encryption verification mismatch",
+            )));
+        }
+
+        fs::rename(&part_path, layout.blob_path(item_id))?;
+
+        let meta = extract_metadata_and_thumbnails(Path::new(file_name), plain_bytes, true);
+        let thumb_locator = match meta.pack_thumb {
+            Some(ref thumb_bytes) => {
+                Some(layout.append_thumbnail(mvk, catalog, item_id, thumb_bytes)?)
+            }
+            None => None,
+        };
+
+        let wrapped_fek = wrap_fek(mvk, item_id, &fek)?.to_vec();
+        let entry = MediaEntry {
+            id: item_id,
+            folder_id: target_folder_id,
+            linked_folder_ids: Vec::new(),
+            original_name: file_name.to_string(),
+            mime_type: meta.mime_type,
+            kind: meta.kind,
+            plaintext_size: plain_bytes.len() as u64,
+            dedup_blake3: dedup_hash,
+            phash: meta.phash,
+            width: meta.width,
+            height: meta.height,
+            exif_camera: meta.exif_camera,
+            micro_thumb: meta.micro_thumb,
+            wrapped_fek,
+            thumb: thumb_locator,
+            tags: Vec::new(),
+            favorite: false,
+            trashed_at_unix_ms: None,
+            captured_at_unix_ms: meta.captured_at_unix_ms.or(captured_at_override_ms),
+            imported_at_unix_ms: now_unix_ms,
+        };
+
+        catalog.insert_media(entry);
+        layout.save_catalog(mvk, catalog)?;
+
+        Ok(SingleImportResult {
+            media_id: item_id,
+            target_folder_id,
+            deduplicated_skip: false,
+            deduplicated_link: false,
+            bytes_encrypted: plain_bytes.len() as u64,
+        })
+    }
+
     /// Scans `source_dir`, initializes an encrypted WAL, and executes the import into `catalog`.
     pub fn run_directory_import(
         layout: &VaultLayout,

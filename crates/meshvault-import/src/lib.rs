@@ -11,6 +11,7 @@ pub use exif::{
 };
 pub use pipeline::{
     generate_synthetic_tree, ImportOptions, ImportPipeline, ImportReport, QuarantinedItem,
+    SingleImportResult,
 };
 pub use scanner::{
     scan_directory_tree, ImportTreePreview, KindCounts, ScanOptions, ScannedFolderSummary,

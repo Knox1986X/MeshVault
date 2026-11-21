@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use meshvault_crypto::{
-    unwrap_fek, Argon2Params, ChunkedBlobReader, MasterVaultKey, RecoveryKit, SecretString,
-    VaultHeader, Zeroize, WRAPPED_FEK_LEN,
+    unwrap_fek, Argon2Params, ChunkedBlobReader, KeyWrappingKey, MasterVaultKey, RecoveryKit,
+    SecretString, VaultHeader, Zeroize, KEY_LEN, WRAPPED_FEK_LEN,
 };
 use meshvault_import::{DedupPolicy, ImportOptions, ImportPipeline};
 use meshvault_storage::{MediaKind, VaultCatalog, VaultLayout};
@@ -76,6 +76,9 @@ pub struct FfiFolderDto {
     pub name: String,
     pub blur_shield: bool,
     pub pinned: bool,
+    pub subfolder_count: u64,
+    pub media_count: u64,
+    pub total_bytes: u64,
     pub created_at_unix_ms: u64,
 }
 
@@ -92,6 +95,7 @@ pub struct FfiMediaDto {
     pub exif_camera: Option<String>,
     pub micro_thumb_bytes: Option<Vec<u8>>,
     pub favorite: bool,
+    pub tags: Vec<String>,
     pub captured_at_unix_ms: Option<u64>,
     pub imported_at_unix_ms: u64,
 }
@@ -115,6 +119,37 @@ pub struct FfiImportReportDto {
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiSingleImportResultDto {
+    pub media_id: String,
+    pub target_folder_id: String,
+    pub deduplicated_skip: bool,
+    pub deduplicated_link: bool,
+    pub bytes_encrypted: u64,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FfiVaultMetricsDto {
+    pub vault_id: String,
+    pub header_revision: u64,
+    pub folder_count: u64,
+    pub total_media: u64,
+    pub total_bytes: u64,
+    pub photo_count: u64,
+    pub photo_bytes: u64,
+    pub video_count: u64,
+    pub video_bytes: u64,
+    pub raw_count: u64,
+    pub raw_bytes: u64,
+    pub doc_count: u64,
+    pub doc_bytes: u64,
+    pub audio_count: u64,
+    pub audio_bytes: u64,
+    pub thumb_pack_bytes: u64,
+    pub trashed_count: u64,
+    pub trashed_bytes: u64,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
 pub struct FfiScrubReportDto {
     pub checked_blobs: u64,
     pub checked_chunks: u64,
@@ -131,6 +166,12 @@ pub enum FfiVaultError {
 
     #[error("invalid identifier: {0}")]
     InvalidUuid(String),
+
+    #[error("invalid wrapping key length (expected 32 bytes)")]
+    InvalidWrappingKeyLength,
+
+    #[error("folder not found: {0}")]
+    FolderNotFound(String),
 
     #[error("media entry not found: {0}")]
     MediaNotFound(String),
@@ -220,6 +261,35 @@ impl MeshVaultSession {
         }))
     }
 
+    /// Unlocks an existing vault using a 32-byte key protected by Android Keystore / BiometricPrompt.
+    #[uniffi::constructor]
+    pub fn unlock_with_hardware_key(
+        vault_dir: String,
+        slot_id: String,
+        wrapping_key_bytes: Vec<u8>,
+    ) -> Result<Arc<Self>, FfiVaultError> {
+        let slot_uuid = parse_uuid(&slot_id)?;
+        let raw_kek: [u8; KEY_LEN] = wrapping_key_bytes
+            .try_into()
+            .map_err(|_| FfiVaultError::InvalidWrappingKeyLength)?;
+        let kek = KeyWrappingKey::from_bytes(raw_kek);
+
+        let layout = VaultLayout::new(PathBuf::from(vault_dir));
+        let header = layout.load_header()?;
+        let mvk = header.unlock_with_wrapping_key(slot_uuid, &kek)?;
+        let catalog = layout.load_catalog(&mvk)?;
+
+        Ok(Arc::new(Self {
+            inner: RwLock::new(SessionInner {
+                state: VaultSecurityState::UnlockedFull,
+                layout,
+                header,
+                mvk: Some(mvk),
+                catalog: Some(catalog),
+            }),
+        }))
+    }
+
     /// Unlocks an existing vault using the 24-word Emergency Recovery Kit.
     #[uniffi::constructor]
     pub fn unlock_with_recovery_kit(
@@ -268,6 +338,25 @@ impl MeshVaultSession {
         let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
         let catalog = guard.catalog.as_ref().ok_or(FfiVaultError::VaultLocked)?;
         Ok(catalog.root_folder_id.to_string())
+    }
+
+    /// Registers a 32-byte hardware-backed wrapping key (Android Keystore) and returns slot_id.
+    pub fn add_hardware_keystore_slot(
+        &self,
+        wrapping_key_bytes: Vec<u8>,
+    ) -> Result<String, FfiVaultError> {
+        let raw_kek: [u8; KEY_LEN] = wrapping_key_bytes
+            .try_into()
+            .map_err(|_| FfiVaultError::InvalidWrappingKeyLength)?;
+        let kek = KeyWrappingKey::from_bytes(raw_kek);
+
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
+        let mvk = guard.mvk.take().ok_or(FfiVaultError::VaultLocked)?;
+        let res = guard.header.add_hardware_slot(&mvk, &kek);
+        guard.mvk = Some(mvk);
+        let slot_id = res?;
+        guard.layout.write_header_pair(&guard.header)?;
+        Ok(slot_id.to_string())
     }
 
     /// Generates and registers a new 24-word Recovery Kit slot in the dual vault header.
@@ -319,6 +408,84 @@ impl MeshVaultSession {
         Ok(id.to_string())
     }
 
+    /// Toggles pinned status on a folder for quick access on the Dark Cockpit Overview.
+    pub fn set_folder_pinned(
+        &self,
+        folder_id: String,
+        pinned: bool,
+    ) -> Result<(), FfiVaultError> {
+        let target_uuid = parse_uuid(&folder_id)?;
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
+        let inner = &mut *guard;
+        let mvk = inner.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        let catalog = inner.catalog.as_mut().ok_or(FfiVaultError::VaultLocked)?;
+
+        let folder = catalog
+            .folders
+            .get_mut(&target_uuid)
+            .ok_or_else(|| FfiVaultError::FolderNotFound(folder_id))?;
+        folder.pinned = pinned;
+        catalog.catalog_revision = catalog.catalog_revision.saturating_add(1);
+        inner.layout.save_catalog(mvk, catalog)?;
+        Ok(())
+    }
+
+    /// Toggles Blur Shield on a folder inside the unlocked vault.
+    pub fn set_folder_blur_shield(
+        &self,
+        folder_id: String,
+        blur_shield: bool,
+    ) -> Result<(), FfiVaultError> {
+        let target_uuid = parse_uuid(&folder_id)?;
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
+        let inner = &mut *guard;
+        let mvk = inner.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        let catalog = inner.catalog.as_mut().ok_or(FfiVaultError::VaultLocked)?;
+
+        let folder = catalog
+            .folders
+            .get_mut(&target_uuid)
+            .ok_or_else(|| FfiVaultError::FolderNotFound(folder_id))?;
+        folder.blur_shield = blur_shield;
+        catalog.catalog_revision = catalog.catalog_revision.saturating_add(1);
+        inner.layout.save_catalog(mvk, catalog)?;
+        Ok(())
+    }
+
+    /// Toggles favorite status on a media item.
+    pub fn toggle_favorite(&self, media_id: String) -> Result<bool, FfiVaultError> {
+        let target_uuid = parse_uuid(&media_id)?;
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
+        let inner = &mut *guard;
+        let mvk = inner.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        let catalog = inner.catalog.as_mut().ok_or(FfiVaultError::VaultLocked)?;
+
+        let item = catalog
+            .media
+            .get_mut(&target_uuid)
+            .ok_or_else(|| FfiVaultError::MediaNotFound(media_id))?;
+        item.favorite = !item.favorite;
+        let new_state = item.favorite;
+        catalog.catalog_revision = catalog.catalog_revision.saturating_add(1);
+        inner.layout.save_catalog(mvk, catalog)?;
+        Ok(new_state)
+    }
+
+    /// Returns folder breadcrumbs from Root down to `folder_id`.
+    pub fn get_folder_breadcrumbs(
+        &self,
+        folder_id: String,
+    ) -> Result<Vec<FfiFolderDto>, FfiVaultError> {
+        let target_uuid = parse_uuid(&folder_id)?;
+        let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
+        let catalog = guard.catalog.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        Ok(catalog
+            .breadcrumbs(target_uuid)
+            .into_iter()
+            .map(|f| folder_to_dto(catalog, f))
+            .collect())
+    }
+
     /// Lists decrypted subfolder and media metadata for `folder_id` in RAM.
     pub fn list_folder_contents(
         &self,
@@ -333,33 +500,87 @@ impl MeshVaultSession {
             folder_id,
             subfolders: subfolders
                 .into_iter()
-                .map(|f| FfiFolderDto {
-                    id: f.id.to_string(),
-                    parent_id: f.parent_id.map(|p| p.to_string()),
-                    name: f.name.clone(),
-                    blur_shield: f.blur_shield,
-                    pinned: f.pinned,
-                    created_at_unix_ms: f.created_at_unix_ms,
-                })
+                .map(|f| folder_to_dto(catalog, f))
                 .collect(),
-            media: items
-                .into_iter()
-                .map(|m| FfiMediaDto {
-                    id: m.id.to_string(),
-                    folder_id: m.folder_id.to_string(),
-                    original_name: m.original_name.clone(),
-                    mime_type: m.mime_type.clone(),
-                    kind: m.kind.into(),
-                    plaintext_size: m.plaintext_size,
-                    width: m.width,
-                    height: m.height,
-                    exif_camera: m.exif_camera.clone(),
-                    micro_thumb_bytes: m.micro_thumb.clone(),
-                    favorite: m.favorite,
-                    captured_at_unix_ms: m.captured_at_unix_ms,
-                    imported_at_unix_ms: m.imported_at_unix_ms,
-                })
-                .collect(),
+            media: items.into_iter().map(media_to_dto).collect(),
+        })
+    }
+
+    /// Lists all active media sorted newest-first for the unified Gallery screen.
+    pub fn list_all_media_timeline(&self) -> Result<Vec<FfiMediaDto>, FfiVaultError> {
+        let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
+        let catalog = guard.catalog.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        Ok(catalog
+            .timeline_media()
+            .into_iter()
+            .map(media_to_dto)
+            .collect())
+    }
+
+    /// Returns aggregate Cockpit metrics and storage distribution by category.
+    pub fn vault_metrics(&self) -> Result<FfiVaultMetricsDto, FfiVaultError> {
+        let guard = self.inner.read().map_err(|_| FfiVaultError::VaultLocked)?;
+        let catalog = guard.catalog.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        let m = catalog.compute_metrics();
+        Ok(FfiVaultMetricsDto {
+            vault_id: guard.header.vault_id.to_string(),
+            header_revision: guard.header.revision,
+            folder_count: m.folder_count,
+            total_media: m.total_media,
+            total_bytes: m.total_bytes,
+            photo_count: m.photo_count,
+            photo_bytes: m.photo_bytes,
+            video_count: m.video_count,
+            video_bytes: m.video_bytes,
+            raw_count: m.raw_count,
+            raw_bytes: m.raw_bytes,
+            doc_count: m.doc_count,
+            doc_bytes: m.doc_bytes,
+            audio_count: m.audio_count,
+            audio_bytes: m.audio_bytes,
+            thumb_pack_bytes: m.thumb_pack_bytes,
+            trashed_count: m.trashed_count,
+            trashed_bytes: m.trashed_bytes,
+        })
+    }
+
+    /// Imports an in-memory media stream (from Android Photo Picker / SAF InputStream) directly into the vault.
+    #[allow(clippy::too_many_arguments)]
+    pub fn import_bytes_item(
+        &self,
+        target_parent_id: String,
+        relative_folder_segments: Vec<String>,
+        file_name: String,
+        bytes: Vec<u8>,
+        dedup_policy: FfiDedupPolicy,
+        captured_at_unix_ms: Option<u64>,
+        now_unix_ms: u64,
+    ) -> Result<FfiSingleImportResultDto, FfiVaultError> {
+        let parent_uuid = parse_uuid(&target_parent_id)?;
+        let mut guard = self.inner.write().map_err(|_| FfiVaultError::VaultLocked)?;
+        let inner = &mut *guard;
+        let mvk = inner.mvk.as_ref().ok_or(FfiVaultError::VaultLocked)?;
+        let catalog = inner.catalog.as_mut().ok_or(FfiVaultError::VaultLocked)?;
+
+        let res = ImportPipeline::import_bytes_item(
+            &inner.layout,
+            mvk,
+            catalog,
+            parent_uuid,
+            &relative_folder_segments,
+            &file_name,
+            &bytes,
+            dedup_policy.into(),
+            captured_at_unix_ms,
+            now_unix_ms,
+        )?;
+
+        Ok(FfiSingleImportResultDto {
+            media_id: res.media_id.to_string(),
+            target_folder_id: res.target_folder_id.to_string(),
+            deduplicated_skip: res.deduplicated_skip,
+            deduplicated_link: res.deduplicated_link,
+            bytes_encrypted: res.bytes_encrypted,
         })
     }
 
@@ -487,6 +708,44 @@ impl MeshVaultSession {
             corrupted_count: report.corrupted_blobs.len() as u64,
             missing_count: report.missing_blobs.len() as u64,
         })
+    }
+}
+
+fn folder_to_dto(
+    catalog: &VaultCatalog,
+    f: &meshvault_storage::FolderNode,
+) -> FfiFolderDto {
+    let (subfolders, items) = catalog.list_folder_contents(f.id);
+    let total_bytes: u64 = items.iter().map(|m| m.plaintext_size).sum();
+    FfiFolderDto {
+        id: f.id.to_string(),
+        parent_id: f.parent_id.map(|p| p.to_string()),
+        name: f.name.clone(),
+        blur_shield: f.blur_shield,
+        pinned: f.pinned,
+        subfolder_count: subfolders.len() as u64,
+        media_count: items.len() as u64,
+        total_bytes,
+        created_at_unix_ms: f.created_at_unix_ms,
+    }
+}
+
+fn media_to_dto(m: &meshvault_storage::MediaEntry) -> FfiMediaDto {
+    FfiMediaDto {
+        id: m.id.to_string(),
+        folder_id: m.folder_id.to_string(),
+        original_name: m.original_name.clone(),
+        mime_type: m.mime_type.clone(),
+        kind: m.kind.into(),
+        plaintext_size: m.plaintext_size,
+        width: m.width,
+        height: m.height,
+        exif_camera: m.exif_camera.clone(),
+        micro_thumb_bytes: m.micro_thumb.clone(),
+        favorite: m.favorite,
+        tags: m.tags.clone(),
+        captured_at_unix_ms: m.captured_at_unix_ms,
+        imported_at_unix_ms: m.imported_at_unix_ms,
     }
 }
 
