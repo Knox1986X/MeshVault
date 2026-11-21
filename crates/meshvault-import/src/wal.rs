@@ -89,7 +89,9 @@ impl ImportWal {
         let raw = fs::read(&wal_path)?;
         let min_len = 4 + 16 + XNONCE_LEN + 16;
         if raw.len() < min_len || raw[0..4] != WAL_MAGIC {
-            return Err(ImportError::WalFormat("invalid or truncated WAL".to_string()));
+            return Err(ImportError::WalFormat(
+                "invalid or truncated WAL".to_string(),
+            ));
         }
 
         let mut job_bytes = [0u8; 16];

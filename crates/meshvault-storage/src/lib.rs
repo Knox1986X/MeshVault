@@ -179,11 +179,10 @@ impl VaultLayout {
                     .thumb_packs
                     .get(&id)
                     .ok_or_else(|| StorageError::InvalidThumbPack("missing pack meta".into()))?;
-                let wrapped: [u8; WRAPPED_FEK_LEN] = meta
-                    .wrapped_fek
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| StorageError::InvalidThumbPack("invalid wrapped FEK".into()))?;
+                let wrapped: [u8; WRAPPED_FEK_LEN] =
+                    meta.wrapped_fek.as_slice().try_into().map_err(|_| {
+                        StorageError::InvalidThumbPack("invalid wrapped FEK".into())
+                    })?;
                 let fek = unwrap_fek(mvk, id, &wrapped)?;
                 (id, fek)
             }
