@@ -40,6 +40,14 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Diagnose dependency resolution
+        run: |
+          ./gradlew :ui:dependencies --configuration debugCompileClasspath > deps.log 2>&1 || true
+          grep -i -E "icons|material3|material3:|compose" deps.log | head -30 | while IFS= read -r line; do
+            line="${line//'%'/'%25'}"; line="${line//$'\r'/''}"; line="${line:0:400}"
+            echo "::warning::$line"
+          done
+
       - name: Assemble debug APK (with diagnostic log)
         run: |
           set +e
