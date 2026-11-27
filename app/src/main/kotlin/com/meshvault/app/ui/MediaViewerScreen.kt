@@ -53,6 +53,7 @@ import com.meshvault.domain.model.MediaKind
 import com.meshvault.ui.components.formatBytesCompact
 import com.meshvault.app.VaultViewModel
 import java.io.File
+import androidx.compose.material.icons.filled.ArrowBack
 
 /**
  * Полноэкранный просмотрщик медиа.

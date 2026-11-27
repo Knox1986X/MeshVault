@@ -31,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Folder
 import com.meshvault.domain.model.FolderIconType
 import com.meshvault.domain.model.MediaItem
 import com.meshvault.domain.model.VaultFolder

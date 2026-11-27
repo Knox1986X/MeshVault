@@ -43,6 +43,8 @@ import com.meshvault.domain.repository.PerformanceProfile
 import com.meshvault.ui.components.SectionHeader
 import com.meshvault.ui.components.formatBytesCompact
 import com.meshvault.ui.theme.CyberObsidian
+import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.Sync
 
 private val cacheLimitOptionsMb = listOf(1024, 2048, 8192)
 private val clipboardOptionsSec = listOf(10, 25, 60)

@@ -56,6 +56,7 @@ import com.meshvault.ui.gallery.GalleryScreen
 import com.meshvault.ui.gallery.DuplicateBannerState
 import com.meshvault.ui.onboarding.UnlockScreen
 import com.meshvault.ui.theme.CyberObsidian
+import androidx.compose.material.icons.filled.Settings
 
 private const val REQUEST_SYSTEM_DELETE: Int = 7321
 
