@@ -62,6 +62,6 @@ object BiometricPromptManager {
                 }
             },
         )
-        prompt.authenticate(BiometricPrompt.CryptoObject(cipher), promptInfo)
+        prompt.authenticate(promptInfo, BiometricPrompt.CryptoObject(cipher))
     }
 }
