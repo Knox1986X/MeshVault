@@ -42,11 +42,11 @@ jobs:
 
       - name: Diagnose dependency resolution
         run: |
-          ./gradlew :ui:dependencyInsight --dependency material-icons-extended --configuration debugCompileClasspath > insight.log 2>&1 || true
-          ./gradlew :ui:dependencies --configuration debugCompileClasspath > deps.log 2>&1 || true
-          cat insight.log | while IFS= read -r line; do
-            line="${line//'%'/'%25'}"; line="${line:0:400}"; [ -n "$line" ] && echo "::warning::$line"
-          done | head -40
+          ./gradlew -q --console=plain :ui:dependencyInsight --dependency material-icons --configuration debugCompileClasspath > insight.log 2>&1 || true
+          ./gradlew -q --console=plain :ui:dependencies --configuration debugCompileClasspath > deps.log 2>&1 || true
+          grep -i "icons" deps.log | while IFS= read -r line; do
+            line="${line//'%'/'%25'}"; line="${line:0:300}"; [ -n "$line" ] && echo "::warning::icons-in-tree: $line"
+          done | head -20
 
       - name: Assemble debug APK (with diagnostic log)
         run: |
@@ -73,8 +73,13 @@ jobs:
           echo "::warning::total compiler error lines: $(grep -c '^e: ' build.log)"
           grep -E "^e: " build.log | sed -E 's/^e: ([^:]+):.*Unresolved reference/  -> \1/' | awk '{print $2}' | sort | uniq -c | sort -rn | head -10 | while IFS= read -r line; do echo "::warning::unresolved per file:$line"; done
 
-          # Kotlin compiler errors (e: file.kt:12:34: error: message)
-          grep -E "^e: " build.log | head -40 | while IFS= read -r line; do emit_error "$line"; done
+          # Unique unresolved references, compacted into one annotation
+          UNIQUE=$(grep -oE "Unresolved reference '[^']+'" build.log | sed "s/Unresolved reference //" | sort | uniq -c | sort -rn | awk '{printf "%s×%s  ", $2, $1}')
+          echo "::warning::unique unresolved symbols: ${UNIQUE:-none}"
+          # Non-icon / non-'Unresolved reference' compiler errors individually
+          grep -E "^e: " build.log | grep -v "Unresolved reference" | head -15 | while IFS= read -r line; do emit_error "$line"; done
+          # First 8 raw error lines for file/line context
+          grep -E "^e: " build.log | head -8 | while IFS= read -r line; do emit_error "$line"; done
           # Java compiler errors
           grep -E "error:" build.log | grep -v "^e: " | head -20 | while IFS= read -r line; do emit_error "$line"; done
           # Gradle FAILURE block with cause
