@@ -12,7 +12,7 @@ import android.provider.MediaStore
 import android.provider.OpenableColumns
 import androidx.exifinterface.media.ExifInterface
 import androidx.work.CoroutineWorker
-import androidx.work.Result
+import androidx.work.ListenableWorker.Result
 import androidx.work.WorkerParameters
 import com.meshvault.crypto.Blake3Hasher
 import com.meshvault.crypto.BlindIndex

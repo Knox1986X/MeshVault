@@ -35,6 +35,8 @@ dependencies {
     api(project(":crypto"))
     api(project(":domain"))
 
+    implementation(platform(libs.androidx.compose.bom))
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
