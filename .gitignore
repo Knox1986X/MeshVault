@@ -1,0 +1,23 @@
+# Gradle & Android build outputs
+.gradle/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Local SDK / IDE configs
+local.properties
+.idea/
+*.iml
+.kotlin/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Keystores & secrets (never commit production keys)
+*.jks
+*.keystore
+keystore.properties
+
+# OS / temporary files
+.DS_Store
+*.swp
+*~
