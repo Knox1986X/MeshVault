@@ -42,11 +42,11 @@ jobs:
 
       - name: Diagnose dependency resolution
         run: |
+          ./gradlew :ui:dependencyInsight --dependency material-icons-extended --configuration debugCompileClasspath > insight.log 2>&1 || true
           ./gradlew :ui:dependencies --configuration debugCompileClasspath > deps.log 2>&1 || true
-          grep -i -E "icons|material3|material3:|compose" deps.log | head -30 | while IFS= read -r line; do
-            line="${line//'%'/'%25'}"; line="${line//$'\r'/''}"; line="${line:0:400}"
-            echo "::warning::$line"
-          done
+          cat insight.log | while IFS= read -r line; do
+            line="${line//'%'/'%25'}"; line="${line:0:400}"; [ -n "$line" ] && echo "::warning::$line"
+          done | head -40
 
       - name: Assemble debug APK (with diagnostic log)
         run: |
@@ -70,6 +70,8 @@ jobs:
 
           echo "--- tail (80 lines) ---"
           tail -n 80 build.log
+          echo "::warning::total compiler error lines: $(grep -c '^e: ' build.log)"
+          grep -E "^e: " build.log | sed -E 's/^e: ([^:]+):.*Unresolved reference/  -> \1/' | awk '{print $2}' | sort | uniq -c | sort -rn | head -10 | while IFS= read -r line; do echo "::warning::unresolved per file:$line"; done
 
           # Kotlin compiler errors (e: file.kt:12:34: error: message)
           grep -E "^e: " build.log | head -40 | while IFS= read -r line; do emit_error "$line"; done
@@ -82,6 +84,17 @@ jobs:
           # Dependency resolution problems
           grep -E "Could not (resolve|find|download|determine)" build.log | head -20 | while IFS= read -r line; do emit_error "$line"; done
           exit "$CODE"
+
+      - name: Upload diagnostics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics
+          path: |
+            insight.log
+            deps.log
+            build.log
+          retention-days: 3
 
       - name: Upload APK artifact
         if: success()
