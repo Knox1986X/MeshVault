@@ -18,7 +18,7 @@ object BiometricPromptManager {
 
     fun isBiometricAvailable(activity: FragmentActivity): Boolean =
         BiometricManager.from(activity)
-            .canAuthenticate(BiometricManager.BIOMETRIC_STRONG) == BiometricManager.BIOMETRIC_SUCCESS
+            .canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) == BiometricManager.BIOMETRIC_SUCCESS
 
     /**
      * Показывает диалог биометрии. [onAuthenticated] получает аутентифицированный [Cipher],
@@ -36,7 +36,7 @@ object BiometricPromptManager {
             .setTitle(title)
             .setSubtitle(subtitle)
             .setNegativeButtonText("Отмена")
-            .setAllowedAuthenticators(BiometricManager.BIOMETRIC_STRONG)
+            .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
             .build()
 
         val prompt = BiometricPrompt(
